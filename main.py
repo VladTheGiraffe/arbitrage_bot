@@ -21,16 +21,31 @@ async def main():
     print(f"TIMESTAMP: {timestamp}")
     message_string = f"{timestamp}GET/trade-api/ws/v2"
     print(f"MESSAGE STRING: {message_string}")
+    
     with open("demo_api.key", "rb") as key_file:
         private_key_bytes = key_file.read()
     print(f"Key Loaded: {type(private_key_bytes)}")
+    
     private_key = load_pem_private_key(private_key_bytes, password=None)
     message_bytes = message_string.encode('utf-8')
     raw_signature = private_key.sign(message_bytes, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH), hashes.SHA256())
     print(f"RAW SIGNATURE LENGTH: {len(raw_signature)}")
+    
     base64_signature = base64.b64encode(raw_signature).decode('utf-8')
     print(f"Base64 Signature: {base64_signature}")
     
+    url = "wss://demo-api.kalshi.co/trade-api/ws/v2"
+    auth_headers = {
+        "KALSHI-ACCESS-KEY": api_key,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": base64_signature
+        }
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(url, headers=auth_headers) as ws:
+            print("Connected to Kalshi WebSocket. Sending Handshake...")
+            response = await ws.receive()
+            print(f"Server Response: {response.data}")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -44,8 +44,21 @@ async def main():
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(url, headers=auth_headers) as ws:
             print("Connected to Kalshi WebSocket. Sending Handshake...")
-            response = await ws.receive()
-            print(f"Server Response: {response.data}")
+            
+            sub_payload = {
+                "id": 1,
+                "cmd": "subscribe",
+                "params": {
+                        "channels": ["orderbook_delta"],
+                        "market_ticker": "KXINXMAXMM-30JUN2026" 
+                }               
+                
+            }
+            await ws.send_json(sub_payload)
+            print("Subscription command sent. Awaiting response...")
+
+            async for msg in ws:
+                print(f"Market Stream Update: {msg.data}")
 
 if __name__ == "__main__":
     asyncio.run(main())

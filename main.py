@@ -4,6 +4,7 @@ import asyncio
 import time
 import aiohttp
 import base64
+import json
 from dotenv import load_dotenv
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -11,6 +12,9 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 #Call .env
 load_dotenv()
+
+#URL
+url = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 
 #Define Asynchronous Loop
 async def main():
@@ -22,7 +26,7 @@ async def main():
     message_string = f"{timestamp}GET/trade-api/ws/v2"
     print(f"MESSAGE STRING: {message_string}")
     
-    with open("demo_api.key", "rb") as key_file:
+    with open("kalshi_api.key", "rb") as key_file:
         private_key_bytes = key_file.read()
     print(f"Key Loaded: {type(private_key_bytes)}")
     
@@ -34,7 +38,7 @@ async def main():
     base64_signature = base64.b64encode(raw_signature).decode('utf-8')
     print(f"Base64 Signature: {base64_signature}")
     
-    url = "wss://demo-api.kalshi.co/trade-api/ws/v2"
+
     auth_headers = {
         "KALSHI-ACCESS-KEY": api_key,
         "KALSHI-ACCESS-TIMESTAMP": timestamp,
@@ -58,7 +62,17 @@ async def main():
             print("Subscription command sent. Awaiting response...")
 
             async for msg in ws:
-                print(f"Market Stream Update: {msg.data}")
+                data = json.loads(msg.data)
+                yes_ask = data.get('yes_ask')
+                no_ask = data.get('no_ask')
+                
+                if yes_ask and no_ask:
+                    total_cost = yes_ask + no_ask
+
+                    if total_cost < 1.00:
+                        profit = 1.00 - total_cost
+                        print(f"ARBITRAGE DETECTED! Profit Margin: {profit:.2f}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

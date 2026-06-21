@@ -6,6 +6,7 @@ import aiohttp
 import base64
 import json
 import requests
+import psycopg2
 from dotenv import load_dotenv
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -13,6 +14,46 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 #Call .env
 load_dotenv()
+
+def log_trade_to_database(ticker, side, contracts, price, profit):
+    try:
+        db_password = os.getenv("DB_PASSWORD")
+        if db_password:
+            conn = psycopg2.connect(
+                dbname=os.getenv("DB_NAME"),
+                user=os.getenv("DB_USER"),
+                password=db_password,
+                host=os.getenv("DB_HOST"),
+                port=os.getenv("DB_PORT")
+            )
+        else:
+            conn = psycopg2.connect(
+                dbname=os.getenv("DB_NAME"),
+                user=os.getenv("DB_USER"),
+                host=os.getenv("DB_HOST"),
+                port=os.getenv("DB_PORT")
+            )
+        cur = conn.cursor()
+
+        query = """
+            INSERT INTO trade_ledger (market_ticker, side, contracts_bought, execution_price, net_profit)
+            VALUES (%s, %s, %s, %s, %s);
+        """
+
+        data_tuple = (ticker, side, contracts, price, profit)
+
+        cur.execute(query, data_tuple)
+        conn.commit()
+        print(f"Database Ledger Updated: Logged {side} trade for {ticker}.")
+
+    except Exception as db_error:
+        print(f"Database Error encountered: {db_error}")
+
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
 
 #Master Target List
 WATCHLIST_PREFIXES = ['BTC', 'ETH', 'INX', "SOL"]
@@ -139,8 +180,8 @@ async def main():
                             "id": 1,
                             "cmd": "subscribe",
                             "params": {
-                                    "channels": ["orderbook_delta"],
-                                    "market_ticker": watchlist 
+                                    "channels": ["ticker"],
+                                    "market_tickers": watchlist 
                             }               
                             
                         }
@@ -152,21 +193,22 @@ async def main():
 
                         async for msg in ws:
                             data = json.loads(msg.data)
+                            print(f"Raw Data: {data}")
                             
-                            if data.get("type") == "orderbook_delta":
+                            if data.get("type") == "ticker":
                                 msg_content = data.get("msg", {})
                                 ticker = msg_content.get("market_ticker", "Unknown")
                                 
-                                yes_bid_raw = msg_content.get("yes_bid")
-                                no_bid_raw = msg_content.get("no_bid")
-                                yes_qty_raw = msg_content.get("yes_bid_quantity")
-                                no_qty_raw = msg_content.get("no_bid_quantity")
+                                yes_bid_raw = msg_content.get("yes_bid_dollars")
+                                no_bid_raw = msg_content.get("yes_ask_dollars")
+                                yes_qty_raw = msg_content.get("yes_bid_size_fp")
+                                no_qty_raw = msg_content.get("yes_ask_size_fp")
 
                                 if all([yes_bid_raw, no_bid_raw, yes_qty_raw, no_qty_raw]):
-                                    yes_bid = float(yes_bid_raw)
-                                    no_bid = float(no_bid_raw)
-                                    yes_qty = int(yes_qty_raw)
-                                    no_qty = int(no_qty_raw)
+                                    yes_bid = int(float(yes_bid_raw))
+                                    no_bid = int(float(no_bid_raw))
+                                    yes_qty = int(float(yes_qty_raw))
+                                    no_qty = int(float(no_qty_raw))
 
                                     total_bid_sum = yes_bid + no_bid
 
@@ -176,7 +218,7 @@ async def main():
                                         execution_size = min(MAX_TEST_SIZE, available_liquidity)
 
                                         if execution_size > 0:
-                                            total_profit = profit_per_contract + execution_size
+                                            total_profit = profit_per_contract * execution_size
 
                                             print(f"ARBITRAGE DETECTED on: {ticker}!")
                                             print(f"YES bid: ${yes_bid:.2f} (Vol: {yes_qty}) | NO bid: ${no_bid:.2f} (Vol: {no_qty})")
@@ -187,6 +229,8 @@ async def main():
                                                 place_arbitrage_order(session, ticker, "yes", yes_bid, execution_size, api_key),
                                                 place_arbitrage_order(session, ticker, "no", no_bid, execution_size, api_key)
                                             )
+                                            log_trade_to_database(ticker, "yes", execution_size, yes_bid, (total_profit / 2))
+                                            log_trade_to_database(ticker, "no", execution_size, no_bid, (total_profit / 2))
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             print(f"Network drop detected from exchange side: {e}")
             print(f"Circuits resetting. Reconnecting automatically in {retry_delay} seconds...")

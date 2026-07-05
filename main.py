@@ -88,57 +88,102 @@ def fetch_polymarket_tickers():
 
         for offset in offsets:
             url = f"https://gamma-api.polymarket.com/events?tag_slug={category}&active=true&closed=false&limit=100&offset={offset}"
-            try:
-                response = requests.get(url, timeout=5)
-                response.raise_for_status()
-                payload = response.json()
+            payload = []
 
-                if len(payload) == 0:
-                    print(f"Reached the end of active markets at offset {offset}. Stopping scan.")
+            while True:
+                try:
+                    response = requests.get(url, timeout=5)
+                    response.raise_for_status()
+                    payload = response.json()
+                    
+                    time.sleep(0.2)
                     break
 
-                print(f"DEBUG: Polymarket returned {len(payload)} total markets.")
-                
-                
-                for event in payload:
-                    for market in event.get("markets", []):
-                        expiry = market.get('endDateIso')
-                        question = market.get('question', '')
+                except Exception as e:
+                    if "422" in str(e):
+                        print(f"Reached max database bounds at offset {offset}. Ending scan.")
+                        break
 
-                        if any(keyword.lower() in question.lower() for keyword in TARGET_KEYWORDS):
-                            match = re.search(r'([A-Za-z]+) Up or Down - [A-Za-z]+ \d{1,2}, (\d{1,2}:\d{2}[AP]M)-(\d{1,2}:\d{2}[AP]M)', question)
-                            #print(f"MATCHED KEYWORD IN: {question}")
-                            if match:
-                                #print(f"REGEX SUCCESS: {match.group(1)}")
-                            
-                                if expiry:
-                                    normalized_date = expiry[:10]
-                                    clob_token_ids = market.get('clobTokenIds', [])
-                                    asset = match.group(1).upper()
-                                    start_time = match.group(2)
-                                    end_time = match.group(3)
+                    print(f"Network block at offset {offset}. Cooling down for 5 seconds.. [{e}]")
+                    time.sleep(5)
 
-                                    ticker_map = {"BITCOIN": "BTC", "ETHEREUM": "ETH", "SOLANA": "SOL"}
-                                    ticker = ticker_map.get(asset, asset)
+            if len(payload) == 0:
+                print(f"Reached the end of active markets at offset {offset}. Stopping scan.")
+                break
 
-                                    bucket_id = f"{ticker}|{normalized_date}|{start_time}-{end_time}"
-                                    market_map[bucket_id] = {
-                                        "question": question,
-                                        "tokens": clob_token_ids
-                                    }
-
-                            # else:
-                            #     print(f"failed: REGEX missed the strike or expiry is missing.")
-                
-                print(f"DEBUG: Polymarket map built with {len(market_map)} markets.")
+            print(f"DEBUG: Polymarket returned {len(payload)} total markets.")
             
-            except Exception as e:
-                    print(f"ERROR DETECTED: {e}")
-                    break
+            
+            for event in payload:
+                for market in event.get("markets", []):
+                    expiry = market.get('endDateIso')
+                    question = market.get('question', '')
+
+                    if any(keyword.lower() in question.lower() for keyword in TARGET_KEYWORDS):
+                        match = re.search(r'([A-Za-z]+) Up or Down - [A-Za-z]+ \d{1,2}, (\d{1,2}:\d{2}[AP]M)-(\d{1,2}:\d{2}[AP]M)', question)
+                        #print(f"MATCHED KEYWORD IN: {question}")
+                        if match:
+                            #print(f"REGEX SUCCESS: {match.group(1)}")
+                        
+                            if expiry:
+                                normalized_date = expiry[:10]
+                                clob_token_ids = market.get('clobTokenIds', [])
+                                asset = match.group(1).upper()
+                                start_time = match.group(2)
+                                end_time = match.group(3)
+
+                                ticker_map = {"BITCOIN": "BTC", "ETHEREUM": "ETH", "SOLANA": "SOL"}
+                                ticker = ticker_map.get(asset, asset)
+
+                                bucket_id = f"{ticker}|{normalized_date}|{start_time}-{end_time}"
+                                market_map[bucket_id] = {
+                                    "question": question,
+                                    "tokens": clob_token_ids
+                                }
+
+                        # else:
+                        #     print(f"failed: REGEX missed the strike or expiry is missing.")
+            
+            print(f"DEBUG: Polymarket map built with {len(market_map)} markets.")
     
     return market_map 
                 
-        
+async def snapshot_polymarket_tickers(poly_map):
+    async with aiohttp.ClientSession() as session:
+        for value in poly_map.values():
+            tokens = value.get("tokens", [])
+            
+            if len(tokens) >= 2:
+                poly_yes_token = tokens[0]
+                poly_no_token = tokens[1]
+
+                for token in [poly_yes_token, poly_no_token]:
+                    url = f"https://clob.polymarket.com/book?token_id={token}"
+
+                    try:
+                        async with session.get(url) as response:
+                            if response.status == 200:
+                                data = await response.json
+
+                                bid_price = 0.0
+                                ask_price = 0.0
+
+                                bids = data.get("bids", [])
+                                if len(bids) > 0:
+                                    bid_price = float(bids[0].get("price"))
+
+                                asks = data.get("asks", [])
+                                if len(asks) > 0:
+                                    ask_price = float(asks[0].get("price"))
+
+                                if token not in poly_market_state:
+                                    poly_market_state[token] = {"bid": 0.0, "ask": 0.0}
+
+                                poly_market_state[token]["bid"] = bid_price
+                                poly_market_state[token]["ask"] = ask_price
+
+                    except Exception as e:
+                        print(f"Snapshot failed for {token}: {e}")
 
 def orchestrator():
     print("Fetching Kalshi...")
@@ -232,33 +277,48 @@ async def run_kalshi(kalshi_watchlist):
                         await ws.send_json(sub_payload)
                         print("Subscription command sent. Awaiting response...")
 
+                        # debug_cap = 0
                         async for msg in ws:
                             data = json.loads(msg.data)
-                            #print(f"Raw Data: {data}")
-                            
+                            # if debug_cap < 3:
+                            #     print(f"\n--- RAW ECHANGE TICK ---")
+                            #     print(data)
+                            #     debug_cap += 1
+                   
                             if data.get("type") == "ticker":
                                 msg_content = data.get("msg", {})
                                 ticker = msg_content.get("market_ticker", "Unknown")
                                 
                                 yes_bid_raw = msg_content.get("yes_bid_dollars")
-                                no_bid_raw = msg_content.get("yes_ask_dollars")
+                                yes_ask_raw = msg_content.get("yes_ask_dollars")
                                 yes_qty_raw = msg_content.get("yes_bid_size_fp")
-                                no_qty_raw = msg_content.get("yes_ask_size_fp")
+                                yes_ask_qty_raw = msg_content.get("yes_ask_size_fp")
 
-                                if all([yes_bid_raw, no_bid_raw, yes_qty_raw, no_qty_raw]):
+                                if all([yes_bid_raw, yes_ask_raw, yes_qty_raw, yes_ask_qty_raw]):
                                     yes_bid = float(yes_bid_raw)
-                                    no_bid = float(no_bid_raw)
-                                    yes_qty = float(yes_qty_raw)
-                                    no_qty = float(no_qty_raw)
+                                    yes_ask = float(yes_ask_raw)
+                                    yes_bid_qty = float(yes_qty_raw)
+                                    yes_ask_qty = float(yes_ask_qty_raw)
+
+                                    no_bid = 1.00 - yes_ask
+                                    no_ask = 1.00 - yes_bid
+                                    no_bid_qty = yes_ask_qty
+                                    no_ask_qty = yes_bid_qty
 
                                     if ticker not in kalshi_market_state:
                                         kalshi_market_state[ticker] = {
-                                            "YES": {"bid": 0.0, "ask": 0.0},
-                                            "NO": {"bid": 0.0, "ask": 0.0}
+                                            "YES": {"bid": 0.0, "ask": 0.0, "bid_qty": 0.0, "ask_qty": 0.0},
+                                            "NO": {"bid": 0.0, "ask": 0.0, "bid_qty": 0.0, "ask_qty": 0.0}
                                         }
 
                                     kalshi_market_state[ticker]["YES"]["bid"] = yes_bid
+                                    kalshi_market_state[ticker]["YES"]["ask"] = yes_ask
+                                    kalshi_market_state[ticker]["YES"]["bid_qty"] = yes_bid_qty
+                                    kalshi_market_state[ticker]["YES"]["ask_qty"] = yes_ask_qty
                                     kalshi_market_state[ticker]["NO"]["bid"] = no_bid
+                                    kalshi_market_state[ticker]["NO"]["ask"] = no_ask
+                                    kalshi_market_state[ticker]["NO"]["bid_qty"] = no_bid_qty
+                                    kalshi_market_state[ticker]["NO"]["ask_qty"] = no_ask_qty
 
                                            
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -290,8 +350,14 @@ async def run_polymarket(poly_watchlist):
 
                     await ws.send_json(sub_payload)
 
+                    debug_cap = 0
                     async for msg in ws:
                         data = json.loads(msg.data)
+                        if debug_cap < 3:
+                                print(f"\n--- RAW EXCHANGE TICK ---")
+                                print(data)
+                                debug_cap += 1
+
                         
                         for event in data:
                             token_id = event.get("asset_id")
@@ -346,12 +412,15 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map):
             poly_yes_token = poly_tokens[0]
             poly_no_token = poly_tokens[1]
 
+            print(f"Lock Status -> Kalshi: {kalshi_ticker in kalshi_market_state} | Poly YES: {poly_yes_token in poly_market_state} | Poly NO: {poly_no_token in poly_market_state}")
+            print(f"Poly State Keys: {list(poly_market_state.keys())}")
+
             if (kalshi_ticker in kalshi_market_state and
                 poly_yes_token in poly_market_state and
                 poly_no_token in poly_market_state):
 
-                kalshi_yes_cost = kalshi_market_state[kalshi_ticker]["yes_bid"]
-                kalshi_no_cost = kalshi_market_state[kalshi_ticker]["no_bid"]
+                kalshi_yes_cost = kalshi_market_state[kalshi_ticker]["YES"]["ask"]
+                kalshi_no_cost = kalshi_market_state[kalshi_ticker]["NO"]["ask"]
 
                 poly_yes_cost = poly_market_state[poly_yes_token]["ask"]
                 poly_no_cost = poly_market_state[poly_no_token]["ask"]
@@ -363,6 +432,8 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map):
 
                 scenario_a_cost = kalshi_yes_cost + poly_no_cost + fee_buffer
                 scenario_b_cost = kalshi_no_cost + poly_yes_cost + fee_buffer
+
+                print(f"Tracking {kalshi_ticker} | Cost A: ${scenario_a_cost:.2f} | Cost B: ${scenario_b_cost:.2f}")
 
                 if scenario_a_cost < 1.00:
                     profit = 1.00 - scenario_a_cost

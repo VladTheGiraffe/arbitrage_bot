@@ -6,6 +6,7 @@ import aiohttp
 import json
 import base64
 import requests
+import uuid
 from datetime import datetime, timedelta
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -69,6 +70,26 @@ def fetch_kalshi_tickers():
     return market_map
     pass
 
+def generate_kalshi_signature(method, path):
+    current_time = time.time()
+    timestamp = str(int(current_time * 1000))
+    message_string = f"{timestamp}{method}{path}"
+    print(f"DEBUG: Hashing String --> {message_string}")
+    
+    with open("kalshi_api.key", "rb") as key_file:
+        private_key_bytes = key_file.read()
+        private_key = load_pem_private_key(private_key_bytes, password=None)
+        message_bytes = message_string.encode('utf-8')
+        raw_signature = private_key.sign(
+            message_bytes,
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+            hashes.SHA256()
+        )
+        base64_signature = base64.b64encode(raw_signature).decode('utf-8')
+
+    return timestamp, base64_signature
+
+
 async def run_kalshi(kalshi_watchlist, kalshi_market_state):
     api_key = os.getenv("KALSHI_API_KEY")
     url = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
@@ -77,85 +98,75 @@ async def run_kalshi(kalshi_watchlist, kalshi_market_state):
 
     while True:
         try:
-            current_time = time.time()
-            timestamp = str(int(current_time * 1000))
-            message_string = f"{timestamp}GET/trade-api/ws/v2"
-            
-            with open("kalshi_api.key", "rb") as key_file:
-                private_key_bytes = key_file.read()
-                private_key = load_pem_private_key(private_key_bytes, password=None)
-                message_bytes = message_string.encode('utf-8')
-                raw_signature = private_key.sign(message_bytes, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH), hashes.SHA256())
-                base64_signature = base64.b64encode(raw_signature).decode('utf-8')
-        
-        
-                auth_headers = {
-                    "KALSHI-ACCESS-KEY": api_key,
-                    "KALSHI-ACCESS-TIMESTAMP": timestamp,
-                    "KALSHI-ACCESS-SIGNATURE": base64_signature
-                    }
+            timestamp, base64_signature = generate_kalshi_signature("GET", "/trade-api/ws/v2")
+
+            auth_headers = {
+                "KALSHI-ACCESS-KEY": api_key,
+                "KALSHI-ACCESS-TIMESTAMP": timestamp,
+                "KALSHI-ACCESS-SIGNATURE": base64_signature
+                }
                 
-                async with aiohttp.ClientSession() as session:
-                    async with session.ws_connect(url, headers=auth_headers) as ws:
-                        print("Connected to Kalshi WebSocket. Sending Handshake...")
-                        retry_delay = 1
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(url, headers=auth_headers) as ws:
+                    print("Connected to Kalshi WebSocket. Sending Handshake...")
+                    retry_delay = 1
+                    
+                    sub_payload = {
+                        "id": 1,
+                        "cmd": "subscribe",
+                        "params": {
+                                "channels": ["ticker"],
+                                "market_tickers": kalshi_watchlist 
+                        }               
                         
-                        sub_payload = {
-                            "id": 1,
-                            "cmd": "subscribe",
-                            "params": {
-                                    "channels": ["ticker"],
-                                    "market_tickers": kalshi_watchlist 
-                            }               
+                    }
+                    await ws.send_json(sub_payload)
+                    print("Subscription command sent. Awaiting response...")
+
+                    # debug_cap = 0
+                    async for msg in ws:
+                        data = json.loads(msg.data)
+                        # if debug_cap < 3:
+                        #     print(f"\n--- RAW ECHANGE TICK ---")
+                        #     print(data)
+                        #     debug_cap += 1
+                
+                        if data.get("type") == "ticker":
+                            msg_content = data.get("msg", {})
+                            ticker = msg_content.get("market_ticker", "Unknown")
                             
-                        }
-                        await ws.send_json(sub_payload)
-                        print("Subscription command sent. Awaiting response...")
+                            yes_bid_raw = msg_content.get("yes_bid_dollars")
+                            yes_ask_raw = msg_content.get("yes_ask_dollars")
+                            yes_qty_raw = msg_content.get("yes_bid_size_fp")
+                            yes_ask_qty_raw = msg_content.get("yes_ask_size_fp")
 
-                        # debug_cap = 0
-                        async for msg in ws:
-                            data = json.loads(msg.data)
-                            # if debug_cap < 3:
-                            #     print(f"\n--- RAW ECHANGE TICK ---")
-                            #     print(data)
-                            #     debug_cap += 1
-                   
-                            if data.get("type") == "ticker":
-                                msg_content = data.get("msg", {})
-                                ticker = msg_content.get("market_ticker", "Unknown")
-                                
-                                yes_bid_raw = msg_content.get("yes_bid_dollars")
-                                yes_ask_raw = msg_content.get("yes_ask_dollars")
-                                yes_qty_raw = msg_content.get("yes_bid_size_fp")
-                                yes_ask_qty_raw = msg_content.get("yes_ask_size_fp")
+                            if all([yes_bid_raw, yes_ask_raw, yes_qty_raw, yes_ask_qty_raw]):
+                                yes_bid = float(yes_bid_raw)
+                                yes_ask = float(yes_ask_raw)
+                                yes_bid_qty = float(yes_qty_raw)
+                                yes_ask_qty = float(yes_ask_qty_raw)
 
-                                if all([yes_bid_raw, yes_ask_raw, yes_qty_raw, yes_ask_qty_raw]):
-                                    yes_bid = float(yes_bid_raw)
-                                    yes_ask = float(yes_ask_raw)
-                                    yes_bid_qty = float(yes_qty_raw)
-                                    yes_ask_qty = float(yes_ask_qty_raw)
+                                no_bid = 1.00 - yes_ask
+                                no_ask = 1.00 - yes_bid
+                                no_bid_qty = yes_ask_qty
+                                no_ask_qty = yes_bid_qty
 
-                                    no_bid = 1.00 - yes_ask
-                                    no_ask = 1.00 - yes_bid
-                                    no_bid_qty = yes_ask_qty
-                                    no_ask_qty = yes_bid_qty
+                                if ticker not in kalshi_market_state:
+                                    kalshi_market_state[ticker] = {
+                                        "YES": {"bid": 0.0, "ask": 0.0, "bid_qty": 0.0, "ask_qty": 0.0},
+                                        "NO": {"bid": 0.0, "ask": 0.0, "bid_qty": 0.0, "ask_qty": 0.0}
+                                    }
 
-                                    if ticker not in kalshi_market_state:
-                                        kalshi_market_state[ticker] = {
-                                            "YES": {"bid": 0.0, "ask": 0.0, "bid_qty": 0.0, "ask_qty": 0.0},
-                                            "NO": {"bid": 0.0, "ask": 0.0, "bid_qty": 0.0, "ask_qty": 0.0}
-                                        }
+                                kalshi_market_state[ticker]["YES"]["bid"] = yes_bid
+                                kalshi_market_state[ticker]["YES"]["ask"] = yes_ask
+                                kalshi_market_state[ticker]["YES"]["bid_qty"] = yes_bid_qty
+                                kalshi_market_state[ticker]["YES"]["ask_qty"] = yes_ask_qty
+                                kalshi_market_state[ticker]["NO"]["bid"] = no_bid
+                                kalshi_market_state[ticker]["NO"]["ask"] = no_ask
+                                kalshi_market_state[ticker]["NO"]["bid_qty"] = no_bid_qty
+                                kalshi_market_state[ticker]["NO"]["ask_qty"] = no_ask_qty
 
-                                    kalshi_market_state[ticker]["YES"]["bid"] = yes_bid
-                                    kalshi_market_state[ticker]["YES"]["ask"] = yes_ask
-                                    kalshi_market_state[ticker]["YES"]["bid_qty"] = yes_bid_qty
-                                    kalshi_market_state[ticker]["YES"]["ask_qty"] = yes_ask_qty
-                                    kalshi_market_state[ticker]["NO"]["bid"] = no_bid
-                                    kalshi_market_state[ticker]["NO"]["ask"] = no_ask
-                                    kalshi_market_state[ticker]["NO"]["bid_qty"] = no_bid_qty
-                                    kalshi_market_state[ticker]["NO"]["ask_qty"] = no_ask_qty
-
-                                           
+                                        
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             print(f"Network drop detected from exchange side: {e}")
             print(f"Circuits resetting. Reconnecting automatically in {retry_delay} seconds...")
@@ -166,3 +177,43 @@ async def run_kalshi(kalshi_watchlist, kalshi_market_state):
         except Exception as e:
             print(f"Error occured: {e}")
             await asyncio.sleep(5)  
+
+
+async def execute_kalshi_buy(ticker, yes_no, count, price):
+    api_key = os.getenv("KALSHI_API_KEY")
+    url = "https://external-api.kalshi.com/trade-api/v2/portfolio/events/orders"
+    path = "/trade-api/v2/portfolio/events/orders"
+
+    timestamp, base64_signature = generate_kalshi_signature("POST", path)
+
+    headers = {
+        "KALSHI-ACCESS-KEY": api_key,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": base64_signature,
+        "Content-Type": "application/json"
+    }
+
+    formatted_price = f"{float(price):.4f}"
+    formatted_count = str(count)
+    formatted_side = "bid" if yes_no.lower() == "yes" else "ask"
+
+    order_payload = {
+        "ticker": ticker,
+        "side": formatted_side,
+        "count": formatted_count,
+        "price": formatted_price,
+        "client_order_id": str(uuid.uuid4()),
+        "time_in_force": "good_till_canceled",
+        "self_trade_prevention_type": "taker_at_cross"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, headers=headers, json=order_payload, allow_redirects=False) as response:
+                result = await response.json()
+                print(f"Kalshi Execution Status: {response.status}")
+                return result
+        
+        except Exception as e:
+            print(f"Failed to execute Kalshi order: {e}")
+            return None

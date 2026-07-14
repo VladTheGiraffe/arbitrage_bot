@@ -1,5 +1,9 @@
 #Imports
+import os
 import time
+import hmac
+import hashlib
+import base64
 import asyncio
 import aiohttp
 import json
@@ -182,3 +186,19 @@ async def run_polymarket(poly_watchlist, poly_market_state):
         except Exception as e:
             print(f"Polymarket error: {e}.")
             await asyncio.sleep(5)
+
+
+async def execute_polymarket_buy(ticker, side, size, price):
+    key_id = os.getenv("POLY_KEY_ID")
+    secret_key = os.getenv("POLY_SECRET_KEY")
+
+    url = "https://api.polymarket.us/orders"
+    path = "/orders"
+
+    print(f"Preparing Web2 Signature for Polymarket US | Ticker: {ticker} | Side: {side} | Size: {size}")
+
+    #HMAC MATH
+
+    #Dictionary Payload
+
+    return None

@@ -12,7 +12,7 @@ from scanner import arbitrage_scanner
 load_dotenv()
 
 #Functions
-def orchestrator():
+async def orchestrator():
     kalshi_market_state = {}
     poly_market_state = {}
 
@@ -50,9 +50,9 @@ def orchestrator():
 
     print(f"Watchlist armed with {len(kalshi_watchlist)} native Kalshi tickers ready for streaming.")
 
-    asyncio.run(snapshot_polymarket_tickers(matched_keys, poly_map, poly_market_state))
+    await snapshot_polymarket_tickers(matched_keys, poly_map, poly_market_state)
 
-    asyncio.run(run_arbitrage_engine(
+    await run_arbitrage_engine(
         kalshi_watchlist,
         poly_watchlist,
         matched_keys,
@@ -60,7 +60,7 @@ def orchestrator():
         poly_map,
         kalshi_market_state,
         poly_market_state
-    ))
+    )
 
 
 async def run_arbitrage_engine(kalshi_watchlist, poly_watchlist, matched_keys, kalshi_map, poly_map, kalshi_market_state, poly_market_state):
@@ -82,6 +82,6 @@ async def test_execution():
     print(f"Final Test Response: {response}")
 
 if __name__ == "__main__":
-    #orchestrator()
+    #asyncio.run(orchestrator())
     #asyncio.run(test_execution())
-    pass
+    

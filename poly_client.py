@@ -9,6 +9,9 @@ import aiohttp
 import json
 import re
 import requests
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import OrderArgs, OrderType
+from py_clob_client.order_builder.constants import BUY, SELL
 
 #Target List
 TARGET_KEYWORDS = ["Bitcoin", "BTC", "Ethereum", "ETH", "Solana", "SOL", "S&P 500", "SPX"]
@@ -189,16 +192,28 @@ async def run_polymarket(poly_watchlist, poly_market_state):
 
 
 async def execute_polymarket_buy(ticker, side, size, price):
-    key_id = os.getenv("POLY_KEY_ID")
-    secret_key = os.getenv("POLY_SECRET_KEY")
+    api_key = os.getenv("POLY_API_ID")
+    poly_address = os.getenv("POLY_ADDRESS")
+    wallet_key = os.getenv("RABBY_PRIVATE_KEY")
 
-    url = "https://api.polymarket.us/orders"
-    path = "/orders"
+    client = ClobClient(
+        host="https://clob.polymarket.com",
+        key=wallet_key, 
+        chain_id=137, 
+        funder=poly_address, 
+        signature_type=2
+    )
 
-    print(f"Preparing Web2 Signature for Polymarket US | Ticker: {ticker} | Side: {side} | Size: {size}")
+    client.set_api_creds(client.create_or_derive_api_creds())
 
-    #HMAC MATH
+    order_args = OrderArgs(
+        price=float(price),
+        size=float(size),
+        side=BUY,
+        token_id=ticker
+    )
 
-    #Dictionary Payload
-
-    return None
+    signed_order = client.create_order(order_args)
+    resp = client.post_order(signed_order, OrderType.GTC)
+    
+    return resp

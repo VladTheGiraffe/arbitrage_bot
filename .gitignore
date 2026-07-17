@@ -3,4 +3,4 @@
 *.key
 *.pem
 __pycache__/
-*.pyc
+*.pyclinux_venv/

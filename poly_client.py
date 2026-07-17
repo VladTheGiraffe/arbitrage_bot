@@ -9,6 +9,13 @@ import aiohttp
 import json
 import re
 import requests
+import logging
+from py_clob_client_v2 import ClobClient, ApiCreds, SignatureTypeV2, OrderArgs, PartialCreateOrderOptions, OrderType, Side
+from eth_account import Account
+from eth_account.messages import encode_typed_data
+
+
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s]: %(message)s", handlers=[logging.StreamHandler()])
 
 #Target List
 TARGET_KEYWORDS = ["Bitcoin", "BTC", "Ethereum", "ETH", "Solana", "SOL", "S&P 500", "SPX"]
@@ -148,35 +155,56 @@ async def run_polymarket(poly_watchlist, poly_market_state):
                     # debug_cap = 0
                     async for msg in ws:
                         data = json.loads(msg.data)
-                        print(f"Poly WS Ping: {str(data)[:60]}...")
+                        #print(f"Poly WS Ping: {str(data)[:60]}...")
                         # if debug_cap < 3:
                         #         print(f"\n--- RAW EXCHANGE TICK ---")
                         #         print(data)
                         #         debug_cap += 1
 
-                        
-                        for event in data:
-                            token_id = event.get("asset_id")
-                            bid_price = 0.0
-                            ask_price = 0.0
+                        if isinstance(data, list):
+                            for event in data:
+                                token_id = event.get("asset_id")
+                                bid_price = 0.0
+                                ask_price = 0.0
 
-                            bids = event.get("bids", [])
+                                bids = event.get("bids", [])
 
-                            if len(bids) > 0:
-                                bid_price = float(bids[0].get("price"))
+                                if len(bids) > 0:
+                                    bid_price = float(bids[0].get("price"))
 
-                            asks = event.get("asks", [])
+                                asks = event.get("asks", [])
 
-                            if len(asks) > 0:
-                                ask_price = float(asks[0].get("price"))
+                                if len(asks) > 0:
+                                    ask_price = float(asks[0].get("price"))
 
-                            if token_id:
-                                if token_id not in poly_market_state:
-                                    poly_market_state[token_id] = {"bid": 0.0, "ask": 0.0}
+                                if token_id:
+                                    if token_id not in poly_market_state:
+                                        poly_market_state[token_id] = {"bid": 0.0, "ask": 0.0}
 
-                            poly_market_state[token_id]["bid"] = bid_price
-                            poly_market_state[token_id]["ask"] = ask_price
-                            print(f"POLY UPDATE | Token: {token_id[-6:]} | New Ask: ${ask_price}")
+                                poly_market_state[token_id]["bid"] = bid_price
+                                poly_market_state[token_id]["ask"] = ask_price
+                                print(f"POLY UPDATE | Token: {token_id[-6:]} | New Ask: ${ask_price}")
+
+                        elif isinstance(data, dict):
+                            if "price_changes" in data:
+                                for update in data["price_changes"]:
+                                    token_id = update.get("asset_id")
+
+                                    if not token_id:
+                                        continue
+
+                                    bid_price = float(update.get("best_bid", 0.0))
+                                    ask_price = float(update.get("best_ask", 0.0))
+
+                                    if token_id not in poly_market_state:
+                                        poly_market_state[token_id] = {"bid": 0.0, "ask": 0.0}
+
+                                    poly_market_state[token_id]["bid"] = bid_price
+                                    poly_market_state[token_id]["ask"] = ask_price
+                                    #print(f"POLY UPDATE | Token: {token_id[-6:]} | New Ask: ${ask_price}")
+
+                            else:
+                                pass                           
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             print(f"Polymarket network drop: {e}. Reconnecting...")
@@ -189,16 +217,40 @@ async def run_polymarket(poly_watchlist, poly_market_state):
 
 
 async def execute_polymarket_buy(ticker, side, size, price):
-    key_id = os.getenv("POLY_KEY_ID")
-    secret_key = os.getenv("POLY_SECRET_KEY")
+    poly_address = os.getenv("POLY_ADDRESS")
+    wallet_key = os.getenv("RABBY_PRIVATE_KEY")
 
-    url = "https://api.polymarket.us/orders"
-    path = "/orders"
+    client = ClobClient(
+        host="https://clob.polymarket.com",
+        key=wallet_key, 
+        chain_id=137, 
+        funder=poly_address, 
+        signature_type=3
+    )
 
-    print(f"Preparing Web2 Signature for Polymarket US | Ticker: {ticker} | Side: {side} | Size: {size}")
+    derived_creds = client.create_or_derive_api_key()
+    logging.info("Derived credentials: %s", derived_creds)
+    
+    client.set_api_creds(derived_creds)
+    
+    order_size = round(float(size), 2)
+    order_price = round(float(price), 2)
 
-    #HMAC MATH
+    order_args = OrderArgs(
+        price=order_price,
+        size=order_size,
+        side=Side.BUY,
+        token_id=ticker
+    )
 
-    #Dictionary Payload
+    try:
+        resp = client.create_and_post_order(order_args)
+        if resp.get("success") == False:
+            print(f"Polymarket order rejected: {resp.get('errorMsg')}")
+            
+        return resp
 
-    return None
+    except Exception as e:
+        print(f"DEBUG: Order rejected. Error details: {e}")
+        
+        return {"success": False, "errorMsg": str(e)}

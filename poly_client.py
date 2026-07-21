@@ -300,6 +300,26 @@ async def get_poly_balance():
     return float(response.get("balance", 0.0)) / 1e6
 
 
+async def check_poly_inventory(token_id, expected_trade_size):
+    try:
+        params = BalanceAllowanceParams(
+            asset_type=AssetType.CONDITIONAL,
+            token_id=token_id
+        )
+
+        response = client.get_balance_allowance(params)
+
+        current_balance = float(response.get("balance", 0.0)) / 1e6
+
+        if current_balance >= float(expected_trade_size):
+            return True
+        return False
+
+    except Exception as e:
+        print(f"Inventory interrogation failed: {e}")
+        return False
+
+
 if __name__ == "__main__":
     import asyncio
     from dotenv import load_dotenv

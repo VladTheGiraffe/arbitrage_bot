@@ -5,3 +5,4 @@
 __pycache__/
 *.pyclinux_venv/
 linux_venv/
+debug_log.txt/

@@ -5,7 +5,7 @@ import math
 import os
 import uuid
 from datetime import datetime
-from poly_client import execute_polymarket_buy, get_poly_balance, execute_polymarket_sell
+from poly_client import execute_polymarket_buy, get_poly_balance, execute_polymarket_sell, check_poly_inventory
 from kalshi_client import execute_kalshi_buy, get_kalshi_balance, execute_kalshi_sell, check_kalshi_order
 
 POLY_MIN_SHARES = 5.0
@@ -96,7 +96,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     try:
                         results = await asyncio.gather(
                             execute_kalshi_buy(kalshi_ticker, "yes", trade_size, kalshi_yes_cost, kalshi_order_id),
-                            execute_polymarket_buy(poly_no_token, "no", trade_size, poly_no_cost, poly_order_id),
+                            execute_polymarket_buy(poly_no_token, "no", trade_size, poly_no_cost),
                             return_exceptions=True
                         )
                         
@@ -111,6 +111,15 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                             if kalshi_actually_filled:
                                 print("State Reconciled: Kalshi trade executed in the dark. Canceling unwind.")
                                 kalshi_result = {"success": True}
+
+                        if isinstance(poly_result, Exception):
+                            print("Network drop detected on Poly leg. Checking inventory...")
+
+                            poly_actually_filled = await check_poly_inventory(poly_no_token, trade_size)
+
+                            if poly_actually_filled:
+                                print("State Reconciled: Poly trade executed in the dark. Cancelling unwind.")
+                                poly_result = {"success": True}
 
                         kalshi_filled = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result
                         poly_filled = not isinstance(poly_result, Exception) and poly_result.get("success") is True
@@ -160,11 +169,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                             execute_polymarket_buy(poly_yes_token, "yes", trade_size, poly_yes_cost),
                             return_exceptions=True
                         )
-                        # for i, result in enumerate(results):
-                        #     if isinstance(result, Exception):
-                        #         print(f"Leg {i} Failed: {result}")
-                        #     else:
-                        #         print(f"Trade execution for leg {i} successful: {result}")
+                        
 
                         kalshi_result = results[0]
                         poly_result = results[1]
@@ -177,6 +182,15 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                             if kalshi_actually_filled:
                                 print("State Reconciled: Kalshi trade executed in the dark. Canceling unwind.")
                                 kalshi_result = {"success": True}
+
+                        if isinstance(poly_result, Exception):
+                            print("Network drop detected on Poly leg. Checking inventory...")
+
+                            poly_actually_filled = await check_poly_inventory(poly_yes_token, trade_size)
+
+                            if poly_actually_filled:
+                                print("State Reconciled: Poly trade executed in the dark. Cancelling unwind.")
+                                poly_result = {"success": True}
 
                         kalshi_filled = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result
                         poly_filled = not isinstance(poly_result, Exception) and poly_result.get("success") is True

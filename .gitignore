@@ -4,3 +4,4 @@
 *.pem
 __pycache__/
 *.pyclinux_venv/
+linux_venv/

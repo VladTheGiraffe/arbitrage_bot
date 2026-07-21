@@ -30,7 +30,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
     print("Scanner active. Hunting for risk free margins...")
 
     while True:
-        print("Tracking {len(matched_keys)} markets...", end="/r")
+        print(f"Tracking {len(matched_keys)} markets...", end="\r")
         for bridge_key in matched_keys:
             kalshi_ticker = kalshi_map[bridge_key]["ticker"]
             poly_tokens = poly_map[bridge_key]["tokens"]
@@ -70,7 +70,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                 scenario_a_cost = kalshi_yes_cost + poly_no_cost + fee_buffer
                 scenario_b_cost = kalshi_no_cost + poly_yes_cost + fee_buffer
 
-                print(f"Tracking {kalshi_ticker} | Cost A: ${scenario_a_cost:.2f} | Cost B: ${scenario_b_cost:.2f}")
+                # print(f"Tracking {kalshi_ticker} | Cost A: ${scenario_a_cost:.2f} | Cost B: ${scenario_b_cost:.2f}")
 
                 if scenario_a_cost < 1.00:
                     print(f"!!! ARB FOUND !!! Profit: ${round(1.00 - scenario_a_cost, 2)} | K_YES + P_NO")
@@ -91,7 +91,6 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                         continue
 
                     kalshi_order_id = str(uuid.uuid4())
-                    poly_order_id = str(uuid.uuid4())
 
                     try:
                         results = await asyncio.gather(
@@ -129,11 +128,11 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                         elif kalshi_filled and not poly_filled:
                             print("!!! ASYMMETRIC FILL: Unwinding Kalshi Leg !!!")
-                            await execute_kalshi_sell(kalshi_ticker, "yes", trade_size, kalshi_yes_cost)
+                            await execute_kalshi_sell(kalshi_ticker, "yes", trade_size, kalshi_yes_cost, 0.02, str(uuid.uuid4()))
 
                         elif poly_filled and not kalshi_filled:
                             print("!!! ASYMETTRIC FILL: Unwinding Poly Leg !!!")
-                            await execute_polymarket_sell(poly_no_token, "no", trade_size, poly_no_cost)
+                            await execute_polymarket_sell(poly_no_token, "no", trade_size, poly_no_cost, 0.02)
 
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")
                         await asyncio.sleep(30)

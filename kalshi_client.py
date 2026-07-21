@@ -28,7 +28,7 @@ def fetch_kalshi_tickers():
             response.raise_for_status()
             data = response.json()
             markets = data.get("markets", [])
-            print(f"DEBUG: Retrieved {len(markets)} total markets.")
+            # print(f"DEBUG: Retrieved {len(markets)} total markets.")
         
             for market in markets:
                 expiry_raw = market.get("close_time", "")
@@ -60,12 +60,12 @@ def fetch_kalshi_tickers():
                         "close_time": expiry_raw
                     }
 
-                    print(f"DEBUG KALSHI: {ticker_string} | Title: {title} | Close: {expiry_raw}")
+                    # print(f"DEBUG KALSHI: {ticker_string} | Title: {title} | Close: {expiry_raw}")
 
         except Exception as e:
             print(f"ERROR fetching Kalshi {series}: {e}")
     
-    print(f"DEBUG: Kalshi map built with {len(market_map)} normalized markets.")
+    # print(f"DEBUG: Kalshi map built with {len(market_map)} normalized markets.")
     
     return market_map
     pass
@@ -74,7 +74,7 @@ def generate_kalshi_signature(method, path):
     current_time = time.time()
     timestamp = str(int(current_time * 1000))
     message_string = f"{timestamp}{method}{path}"
-    print(f"DEBUG: Hashing String --> {message_string}")
+    # print(f"DEBUG: Hashing String --> {message_string}")
     
     with open("kalshi_api.key", "rb") as key_file:
         private_key_bytes = key_file.read()
@@ -305,21 +305,21 @@ async def check_kalshi_order(client_order_id):
     try:
         timestamp, signature = generate_kalshi_signature("GET", endpoint_path)
 
-    headers = {
-        "KALSHI-ACCESS-KEY": os.getenv("KALSHI_API_KEY"),
-        "KALSHI-ACCESS-TIMESTAMP": timestamp,
-        "KALSHI-ACCESS-SIGNATURE": signature
-    }
+        headers = {
+            "KALSHI-ACCESS-KEY": os.getenv("KALSHI_API_KEY"),
+            "KALSHI-ACCESS-TIMESTAMP": timestamp,
+            "KALSHI-ACCESS-SIGNATURE": signature
+        }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url + endpoint_path, headers=headers) as resp:
-            response = await resp.json()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url + endpoint_path, headers=headers) as resp:
+                response = await resp.json()
 
-    status = response.get("order", {}).get("status")
+        status = response.get("order", {}).get("status")
 
-    if status == "executed":
-        return True
-    return False
+        if status == "executed":
+            return True
+        return False
 
     except Exception as e:
         print(f"Interrogation failed: {e}")

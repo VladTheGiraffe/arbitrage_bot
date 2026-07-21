@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 
 
 #Modular Imports
-from kalshi_client import fetch_kalshi_tickers, generate_kalshi_signature, run_kalshi, execute_kalshi_buy, get_kalshi_balance
-from poly_client import initialize_poly_client, fetch_polymarket_tickers, snapshot_polymarket_tickers, run_polymarket, execute_polymarket_buy, get_poly_balance
+from kalshi_client import fetch_kalshi_tickers, run_kalshi, get_kalshi_balance
+from poly_client import initialize_poly_client, fetch_polymarket_tickers, snapshot_polymarket_tickers, run_polymarket, get_poly_balance
 from scanner import arbitrage_scanner
 
 #Load Environment

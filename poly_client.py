@@ -74,7 +74,7 @@ def fetch_polymarket_tickers():
                 print(f"Reached the end of active markets at offset {offset}. Stopping scan.")
                 break
 
-            print(f"DEBUG: Polymarket returned {len(payload)} total markets.")
+            # print(f"DEBUG: Polymarket returned {len(payload)} total markets.")
             
             
             for event in payload:
@@ -109,7 +109,7 @@ def fetch_polymarket_tickers():
                         # else:
                         #     print(f"failed: REGEX missed the strike or expiry is missing.")
             
-            print(f"DEBUG: Polymarket map built with {len(market_map)} markets.")
+            # print(f"DEBUG: Polymarket map built with {len(market_map)} markets.")
     
     return market_map 
     pass
@@ -205,7 +205,7 @@ async def run_polymarket(poly_watchlist, poly_market_state):
 
                                 poly_market_state[token_id]["bid"] = bid_price
                                 poly_market_state[token_id]["ask"] = ask_price
-                                print(f"POLY UPDATE | Token: {token_id[-6:]} | New Ask: ${ask_price}")
+                                # print(f"POLY UPDATE | Token: {token_id[-6:]} | New Ask: ${ask_price}")
 
                         elif isinstance(data, dict):
                             if "price_changes" in data:

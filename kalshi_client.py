@@ -90,6 +90,30 @@ def generate_kalshi_signature(method, path):
     return timestamp, base64_signature
 
 
+async def get_kalshi_balance():
+    path = "/trade-api/v2/portfolio/balance"
+    method = "GET"
+
+    timestamp, signature = generate_kalshi_signature(method, path)
+
+    headers = {
+        "KALSHI-ACCESS-KEY": os.getenv("KALSHI_API_KEY"),
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": signature
+    }
+
+    url = f"https://external-api.kalshi.com{path}"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as response:
+            data = await response.json()
+
+            raw_cents = data.get("balance", 0)
+            usd_balance = float(raw_cents) / 100.0
+
+            return usd_balance
+
+
 async def run_kalshi(kalshi_watchlist, kalshi_market_state):
     api_key = os.getenv("KALSHI_API_KEY")
     url = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
@@ -179,7 +203,7 @@ async def run_kalshi(kalshi_watchlist, kalshi_market_state):
             await asyncio.sleep(5)  
 
 
-async def execute_kalshi_buy(ticker, yes_no, count, price):
+async def execute_kalshi_buy(ticker, yes_no, count, price, client_order_id):
     api_key = os.getenv("KALSHI_API_KEY")
     url = "https://external-api.kalshi.com/trade-api/v2/portfolio/events/orders"
     path = "/trade-api/v2/portfolio/events/orders"
@@ -193,17 +217,24 @@ async def execute_kalshi_buy(ticker, yes_no, count, price):
         "Content-Type": "application/json"
     }
 
-    formatted_price = f"{float(price):.4f}"
-    formatted_count = str(count)
-    formatted_side = "bid" if yes_no.lower() == "yes" else "ask"
+    if yes_no.lower() == "no":
+        inverted_price = 1.00 - float(price)
+        formatted_price = f"{inverted_price:.4f}"
+        formatted_side = "ask"
+
+    else:
+        formatted_price = f"{float(price):.4f}"
+        formatted_side = "bid" if yes_no.lower() == "yes" else "ask"
+
+    formatted_count = str(int(float(count)))
 
     order_payload = {
         "ticker": ticker,
         "side": formatted_side,
         "count": formatted_count,
         "price": formatted_price,
-        "client_order_id": str(uuid.uuid4()),
-        "time_in_force": "good_till_canceled",
+        "client_order_id": client_order_id,
+        "time_in_force": "fill_or_kill",
         "self_trade_prevention_type": "taker_at_cross"
     }
 
@@ -217,3 +248,88 @@ async def execute_kalshi_buy(ticker, yes_no, count, price):
         except Exception as e:
             print(f"Failed to execute Kalshi order: {e}")
             return None
+
+
+async def execute_kalshi_sell(ticker, yes_no, count, price, max_slippage, client_order_id):
+    api_key = os.getenv("KALSHI_API_KEY")
+    url = "https://external-api.kalshi.com/trade-api/v2/portfolio/events/orders"
+    path = "/trade-api/v2/portfolio/events/orders"
+
+    timestamp, base64_signature = generate_kalshi_signature("POST", path)
+
+    headers = {
+        "KALSHI-ACCESS-KEY": api_key,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": base64_signature,
+        "Content-Type": "application/json"
+    }
+
+    base_price = float(price)
+
+    if yes_no.lower() == "yes":
+        formatted_side = "ask"
+        calculated_price = base_price - max_slippage
+    else:
+        formatted_side = "bid"
+        calculated_price = base_price + max_slippage
+    
+    formatted_count = str(int(float(count)))
+    formatted_price = f"{calculated_price:.4f}"
+
+    order_payload = {
+        "ticker": ticker,
+        "side": formatted_side,
+        "count": formatted_count,
+        "price": formatted_price,
+        "client_order_id": client_order_id,
+        "time_in_force": "fill_or_kill",
+        "self_trade_prevention_type": "taker_at_cross"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, headers=headers, json=order_payload, allow_redirects=False) as response:
+                result = await response.json()
+                print(f"Kalshi Execution Status: {response.status}")
+                return result
+        
+        except Exception as e:
+            print(f"Failed to execute Kalshi order: {e}")
+            return None
+
+
+async def check_kalshi_order(client_order_id):
+    url = "https://external-api.kalshi.com/trade-api/v2"
+    endpoint_path = f"/portfolio/orders/{client_order_id}"
+
+    try:
+        timestamp, signature = generate_kalshi_signature("GET", endpoint_path)
+
+    headers = {
+        "KALSHI-ACCESS-KEY": os.getenv("KALSHI_API_KEY"),
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": signature
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url + endpoint_path, headers=headers) as resp:
+            response = await resp.json()
+
+    status = response.get("order", {}).get("status")
+
+    if status == "executed":
+        return True
+    return False
+
+    except Exception as e:
+        print(f"Interrogation failed: {e}")
+        return False
+
+
+if __name__ == "__main__":
+    import asyncio
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    balance = asyncio.run(get_kalshi_balance())
+    print(f"Kalshi Account Balance: ${balance}")

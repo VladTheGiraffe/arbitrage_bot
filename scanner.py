@@ -2,15 +2,35 @@
 import asyncio
 import time
 import math
+import os
+import uuid
 from datetime import datetime
-from poly_client import execute_polymarket_buy
-from kalshi_client import execute_kalshi_buy
+from poly_client import execute_polymarket_buy, get_poly_balance, execute_polymarket_sell
+from kalshi_client import execute_kalshi_buy, get_kalshi_balance, execute_kalshi_sell, check_kalshi_order
+
+POLY_MIN_SHARES = 5.0
+MIN_KALSHI_BALANCE = float(os.getenv("MIN_KALSHI_BALANCE", 5.00))
+MIN_POLY_BALANCE = float(os.getenv("MIN_POLY_BALANCE", 5.00))
+
+async def has_sufficient_funds(trade_size, k_price, p_price):
+    kalshi_cost = trade_size * k_price
+    poly_cost = trade_size * p_price
+
+    k_bal = await get_kalshi_balance()
+    p_bal = await get_poly_balance()
+
+    if k_bal < (kalshi_cost + MIN_KALSHI_BALANCE) or p_bal < (poly_cost + MIN_POLY_BALANCE):
+        print(f"Gate Blocked: Insufficient funds for trade. K_bal: ${k_bal:.2f}, P_bal: ${p_bal:.2f}")
+        return False
+
+    return True
 
 #Arbitrage Scanner
 async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_state, poly_market_state):
     print("Scanner active. Hunting for risk free margins...")
 
     while True:
+        print("Tracking {len(matched_keys)} markets...", end="/r")
         for bridge_key in matched_keys:
             kalshi_ticker = kalshi_map[bridge_key]["ticker"]
             poly_tokens = poly_map[bridge_key]["tokens"]
@@ -36,6 +56,11 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     (kalshi_no_cost <= 0.00 or kalshi_no_cost >= 1.00) or \
                     (poly_yes_cost <= 0.00 or poly_yes_cost >= 1.00):
 
+                    print(f"\n--- RAW DATA DUMP ---")
+                    print(f"Kalshi State: {kalshi_market_state[kalshi_ticker]}")
+                    print(f"Poly State: {poly_market_state[poly_yes_token]}, {poly_market_state[poly_no_token]}")
+                    print(f"--- END RAW DATA DUMP ---\n")
+
                     print(f"GATE BLOCKED | K_YES: {kalshi_yes_cost} | P_NO: {poly_no_cost} | K_NO: {kalshi_no_cost} | P_YES: {poly_yes_cost} ")
                     continue
 
@@ -48,7 +73,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                 print(f"Tracking {kalshi_ticker} | Cost A: ${scenario_a_cost:.2f} | Cost B: ${scenario_b_cost:.2f}")
 
                 if scenario_a_cost < 1.00:
-                    print(f"!!! ARB FOUND !!! Profit: $round(1.00 - scenario_a_cost, 2) | K_YES + P_NO")
+                    print(f"!!! ARB FOUND !!! Profit: ${round(1.00 - scenario_a_cost, 2)} | K_YES + P_NO")
                     print("Executing simultaneous cross-chain trades...")
                     
                     
@@ -57,18 +82,49 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                     notional_target = 1.05
                     size_by_notional = math.ceil(notional_target / float(price_per_share))
-                    trade_size = max(min_size_from_exchange, size_by_notional)
+                    trade_size = max(POLY_MIN_SHARES, size_by_notional)
                     trade_size = round(trade_size, 2)
                     
-                    print(f"DEBUG: Using trade_size {trade_size} (Min size from exchange: {min_size_from_exchange}")
-                    
+                    is_funded = await has_sufficient_funds(trade_size, kalshi_yes_cost, poly_no_cost)
+
+                    if not is_funded:
+                        continue
+
+                    kalshi_order_id = str(uuid.uuid4())
+                    poly_order_id = str(uuid.uuid4())
+
                     try:
                         results = await asyncio.gather(
-                            execute_kalshi_buy(kalshi_ticker, "yes", trade_size, kalshi_yes_cost),
-                            execute_polymarket_buy(poly_no_token, "no", trade_size, poly_no_cost),
+                            execute_kalshi_buy(kalshi_ticker, "yes", trade_size, kalshi_yes_cost, kalshi_order_id),
+                            execute_polymarket_buy(poly_no_token, "no", trade_size, poly_no_cost, poly_order_id),
                             return_exceptions=True
                         )
-                        print(f"Execution Pipeline Results: {results}")
+                        
+                        kalshi_result = results[0]
+                        poly_result = results[1]
+
+                        if isinstance(kalshi_result, Exception):
+                            print("Network drop detected on Kalshi leg. Interrogating API...")
+
+                            kalshi_actually_filled = await check_kalshi_order(kalshi_order_id)
+
+                            if kalshi_actually_filled:
+                                print("State Reconciled: Kalshi trade executed in the dark. Canceling unwind.")
+                                kalshi_result = {"success": True}
+
+                        kalshi_filled = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result
+                        poly_filled = not isinstance(poly_result, Exception) and poly_result.get("success") is True
+
+                        if kalshi_filled == poly_filled:
+                            print("Execution Symmetrical. No unwind required.")
+
+                        elif kalshi_filled and not poly_filled:
+                            print("!!! ASYMMETRIC FILL: Unwinding Kalshi Leg !!!")
+                            await execute_kalshi_sell(kalshi_ticker, "yes", trade_size, kalshi_yes_cost)
+
+                        elif poly_filled and not kalshi_filled:
+                            print("!!! ASYMETTRIC FILL: Unwinding Poly Leg !!!")
+                            await execute_polymarket_sell(poly_no_token, "no", trade_size, poly_no_cost)
 
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")
                         await asyncio.sleep(30)
@@ -86,23 +142,55 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                     notional_target = 1.05
                     size_by_notional = math.ceil(notional_target / float(price_per_share))
-                    trade_size = max(min_size_from_exchange, size_by_notional)
+                    trade_size = max(POLY_MIN_SHARES, size_by_notional)
                     trade_size = round(trade_size, 2)
                     
-                    print(f"DEBUG: Using trade_size {trade_size} (Min size from exchange: {min_size_from_exchange}") 
+                    is_funded = await has_sufficient_funds(trade_size, kalshi_no_cost, poly_yes_cost)
+
+                    if not is_funded:
+                        continue
                     
+
+                    kalshi_order_id = str(uuid.uuid4())
+
                     try:
                         print("Firing execution leg...")
                         results = await asyncio.gather(
-                            execute_kalshi_buy(kalshi_ticker, "no", trade_size, kalshi_no_cost),
+                            execute_kalshi_buy(kalshi_ticker, "no", trade_size, kalshi_no_cost, kalshi_order_id),
                             execute_polymarket_buy(poly_yes_token, "yes", trade_size, poly_yes_cost),
                             return_exceptions=True
                         )
-                        for i, result in enumerate(results):
-                            if isinstance(result, Exception):
-                                print(f"Leg {i} Failed: {result}")
-                            else:
-                                print(f"Trade execution for leg {i} successful: {result}")
+                        # for i, result in enumerate(results):
+                        #     if isinstance(result, Exception):
+                        #         print(f"Leg {i} Failed: {result}")
+                        #     else:
+                        #         print(f"Trade execution for leg {i} successful: {result}")
+
+                        kalshi_result = results[0]
+                        poly_result = results[1]
+
+                        if isinstance(kalshi_result, Exception):
+                            print("Network drop detected on Kalshi leg. Interrogating API...")
+
+                            kalshi_actually_filled = await check_kalshi_order(kalshi_order_id)
+
+                            if kalshi_actually_filled:
+                                print("State Reconciled: Kalshi trade executed in the dark. Canceling unwind.")
+                                kalshi_result = {"success": True}
+
+                        kalshi_filled = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result
+                        poly_filled = not isinstance(poly_result, Exception) and poly_result.get("success") is True
+
+                        if kalshi_filled == poly_filled:
+                            print("Execution Symmetrical. No unwind required.")
+
+                        elif kalshi_filled and not poly_filled:
+                            print("!!! ASYMMETRIC FILL: Unwinding Kalshi Leg !!!")
+                            await execute_kalshi_sell(kalshi_ticker, "no", trade_size, kalshi_no_cost)
+
+                        elif poly_filled and not kalshi_filled:
+                            print("!!! ASYMETTRIC FILL: Unwinding Poly Leg !!!")
+                            await execute_polymarket_sell(poly_yes_token, "yes", trade_size, poly_yes_cost)
                         
 
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")

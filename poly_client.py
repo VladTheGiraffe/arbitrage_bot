@@ -10,7 +10,7 @@ import json
 import re
 import requests
 import logging
-from py_clob_client_v2 import ClobClient, ApiCreds, SignatureTypeV2, OrderArgs, PartialCreateOrderOptions, OrderType, Side
+from py_clob_client_v2 import ClobClient, ApiCreds, SignatureTypeV2, OrderArgs, PartialCreateOrderOptions, OrderType, Side, BalanceAllowanceParams, AssetType
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 
@@ -20,12 +20,32 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s]: %
 #Target List
 TARGET_KEYWORDS = ["Bitcoin", "BTC", "Ethereum", "ETH", "Solana", "SOL", "S&P 500", "SPX"]
 
+client = None
+#Initialization Function
+def initialize_poly_client():
+    global client
+    poly_address = os.getenv("POLY_ADDRESS")
+    wallet_key = os.getenv("RABBY_PRIVATE_KEY")
+
+    client = ClobClient(
+        host="https://clob.polymarket.com",
+        key=wallet_key, 
+        chain_id=137, 
+        funder=poly_address, 
+        signature_type=3
+    )
+
+    derived_creds = client.create_or_derive_api_key()
+    logging.info("Derived credentials: %s", derived_creds)
+    client.set_api_creds(derived_creds)
+    
 
 #Fetch Tickers
 def fetch_polymarket_tickers():
     market_map = {}
     target_categories = ["crypto", "business"]
     offsets = range(0, 3000, 100)
+    
 
     for category in target_categories:
 
@@ -59,6 +79,8 @@ def fetch_polymarket_tickers():
             
             for event in payload:
                 for market in event.get("markets", []):
+                    if market.get("closed") == True or market.get("active") == False:
+                        continue
                     expiry = market.get('endDateIso')
                     question = market.get('question', '')
 
@@ -217,22 +239,6 @@ async def run_polymarket(poly_watchlist, poly_market_state):
 
 
 async def execute_polymarket_buy(ticker, side, size, price):
-    poly_address = os.getenv("POLY_ADDRESS")
-    wallet_key = os.getenv("RABBY_PRIVATE_KEY")
-
-    client = ClobClient(
-        host="https://clob.polymarket.com",
-        key=wallet_key, 
-        chain_id=137, 
-        funder=poly_address, 
-        signature_type=3
-    )
-
-    derived_creds = client.create_or_derive_api_key()
-    logging.info("Derived credentials: %s", derived_creds)
-    
-    client.set_api_creds(derived_creds)
-    
     order_size = round(float(size), 2)
     order_price = round(float(price), 2)
 
@@ -244,7 +250,7 @@ async def execute_polymarket_buy(ticker, side, size, price):
     )
 
     try:
-        resp = client.create_and_post_order(order_args)
+        resp = client.create_and_post_order(order_args, order_type=OrderType.FOK)
         if resp.get("success") == False:
             print(f"Polymarket order rejected: {resp.get('errorMsg')}")
             
@@ -254,3 +260,51 @@ async def execute_polymarket_buy(ticker, side, size, price):
         print(f"DEBUG: Order rejected. Error details: {e}")
         
         return {"success": False, "errorMsg": str(e)}
+
+
+async def execute_polymarket_sell(ticker, side, size, price, max_slippage):
+    order_size = round(float(size), 2)
+    base_price = float(price)
+
+    calculated_price = base_price - max_slippage
+
+    formatted_price = f"{calculated_price:.4f}"
+
+    order_args = OrderArgs(
+        price=formatted_price,
+        size=order_size,
+        side=Side.SELL,
+        token_id=ticker
+    )
+
+    try:
+        resp = client.create_and_post_order(order_args, order_type=OrderType.FOK)
+        if resp.get("success") == False:
+            print(f"Polymarket order rejected: {resp.get('errorMsg')}")
+            
+        return resp
+
+    except Exception as e:
+        print(f"DEBUG: Order rejected. Error details: {e}")
+        
+        return {"success": False, "errorMsg": str(e)}
+
+
+async def get_poly_balance():
+    params = BalanceAllowanceParams(
+        asset_type=AssetType.COLLATERAL
+    )
+
+    response = client.get_balance_allowance(params)
+
+    return float(response.get("balance", 0.0)) / 1e6
+
+
+if __name__ == "__main__":
+    import asyncio
+    from dotenv import load_dotenv
+    load_dotenv()
+    initialize_poly_client()
+
+    poly_bal = asyncio.run(get_poly_balance())
+    print(f"Polymarket Account Balance: ${poly_bal:.2f}")

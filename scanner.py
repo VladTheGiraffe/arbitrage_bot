@@ -76,6 +76,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     print(f"!!! ARB FOUND !!! Profit: ${round(1.00 - scenario_a_cost, 2)} | K_YES + P_NO")
                     print("Executing simultaneous cross-chain trades...")
                     
+                    entry_slippage_cap = 0.01
                     
                     price_per_share = poly_no_cost
                     
@@ -83,7 +84,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     notional_target = 1.05
                     size_by_notional = math.ceil(notional_target / float(price_per_share))
                     trade_size = max(POLY_MIN_SHARES, size_by_notional)
-                    trade_size = round(trade_size, 2)
+                    trade_size = int(trade_size)
                     
                     is_funded = await has_sufficient_funds(trade_size, kalshi_yes_cost, poly_no_cost)
 
@@ -94,15 +95,15 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                     try:
                         results = await asyncio.gather(
-                            execute_kalshi_buy(kalshi_ticker, "yes", trade_size, kalshi_yes_cost, kalshi_order_id),
-                            execute_polymarket_buy(poly_no_token, "no", trade_size, poly_no_cost),
+                            execute_kalshi_buy(kalshi_ticker, "yes", trade_size, kalshi_yes_cost, kalshi_order_id, entry_slippage_cap),
+                            execute_polymarket_buy(poly_no_token, "no", trade_size, poly_no_cost, entry_slippage_cap),
                             return_exceptions=True
                         )
                         
                         kalshi_result = results[0]
                         poly_result = results[1]
 
-                        if isinstance(kalshi_result, Exception):
+                        if isinstance(kalshi_result, Exception) or kalshi_result.get("status") == 409:
                             print("Network drop detected on Kalshi leg. Interrogating API...")
 
                             kalshi_actually_filled = await check_kalshi_order(kalshi_order_id)
@@ -111,6 +112,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                                 print("State Reconciled: Kalshi trade executed in the dark. Canceling unwind.")
                                 kalshi_result = {"success": True}
 
+                    
                         if isinstance(poly_result, Exception):
                             print("Network drop detected on Poly leg. Checking inventory...")
 
@@ -132,7 +134,28 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                         elif poly_filled and not kalshi_filled:
                             print("!!! ASYMETTRIC FILL: Unwinding Poly Leg !!!")
-                            await execute_polymarket_sell(poly_no_token, "no", trade_size, poly_no_cost, 0.02)
+
+                            max_retries = 5
+                            retry_count = 0
+                            tokens_arrived = False
+
+                            while retry_count < max_retries and not tokens_arrived:
+                                print(f"Checking wallet for tokens... (Attempt {retry_count + 1}/{max_retries})")
+
+                                poly_actually_filled = await check_poly_inventory(poly_no_token, trade_size)
+
+                                if poly_actually_filled:
+                                    tokens_arrived = True
+                                    print("Tokens settled on-chain. Firing execution leg..")
+                                
+                                    await execute_polymarket_sell(poly_no_token, "no", trade_size, poly_no_cost, poly_no_cost - 0.01)
+
+                                else:
+                                    retry_count += 1
+                                    await asyncio.sleep(2)
+
+                            if not tokens_arrived:
+                                print("CRITICAL: Blockchain failed to settle tokens. Manual Unwind Required.")
 
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")
                         await asyncio.sleep(30)
@@ -144,14 +167,15 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     print(f"!!! ARB FOUND !!! Profit: ${round(1.00 - scenario_b_cost, 2)} | K_NO + P_YES")
                     print("Executing simultaneous cross-chain trades...")
                     
-                    
+                    entry_slippage_cap = 0.01
+
                     price_per_share = poly_yes_cost
                     
 
                     notional_target = 1.05
                     size_by_notional = math.ceil(notional_target / float(price_per_share))
                     trade_size = max(POLY_MIN_SHARES, size_by_notional)
-                    trade_size = round(trade_size, 2)
+                    trade_size = int(trade_size)
                     
                     is_funded = await has_sufficient_funds(trade_size, kalshi_no_cost, poly_yes_cost)
 
@@ -164,8 +188,8 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     try:
                         print("Firing execution leg...")
                         results = await asyncio.gather(
-                            execute_kalshi_buy(kalshi_ticker, "no", trade_size, kalshi_no_cost, kalshi_order_id),
-                            execute_polymarket_buy(poly_yes_token, "yes", trade_size, poly_yes_cost),
+                            execute_kalshi_buy(kalshi_ticker, "no", trade_size, kalshi_no_cost, kalshi_order_id, entry_slippage_cap),
+                            execute_polymarket_buy(poly_yes_token, "yes", trade_size, poly_yes_cost, entry_slippage_cap),
                             return_exceptions=True
                         )
                         
@@ -199,12 +223,33 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                         elif kalshi_filled and not poly_filled:
                             print("!!! ASYMMETRIC FILL: Unwinding Kalshi Leg !!!")
-                            await execute_kalshi_sell(kalshi_ticker, "no", trade_size, kalshi_no_cost)
+                            await execute_kalshi_sell(kalshi_ticker, "no", trade_size, kalshi_no_cost, 0.02, str(uuid.uuid4()))
 
                         elif poly_filled and not kalshi_filled:
                             print("!!! ASYMETTRIC FILL: Unwinding Poly Leg !!!")
-                            await execute_polymarket_sell(poly_yes_token, "yes", trade_size, poly_yes_cost)
-                        
+                            
+                            max_retries = 5
+                            retry_count = 0
+                            tokens_arrived = False
+
+                            while retry_count < max_retries and not tokens_arrived:
+                                print(f"Checking wallet for tokens... (Attempt {retry_count + 1}/{max_retries})")
+
+                                poly_actually_filled = await check_poly_inventory(poly_yes_token, trade_size)
+
+                                if poly_actually_filled:
+                                    tokens_arrived = True
+                                    print("Tokens settled on-chain. Firing execution leg..")
+                                
+                                    await execute_polymarket_sell(poly_yes_token, "yes", trade_size, poly_yes_cost, poly_yes_cost - 0.01)
+
+                                else:
+                                    retry_count += 1
+                                    await asyncio.sleep(2)
+
+                            if not tokens_arrived:
+                                print("CRITICAL: Blockchain failed to settle tokens. Manual Unwind Required.")
+                            
 
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")
                         await asyncio.sleep(30)

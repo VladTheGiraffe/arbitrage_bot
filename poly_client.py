@@ -238,9 +238,9 @@ async def run_polymarket(poly_watchlist, poly_market_state):
             await asyncio.sleep(5)
 
 
-async def execute_polymarket_buy(ticker, side, size, price):
+async def execute_polymarket_buy(ticker, side, size, price, max_slippage):
     order_size = round(float(size), 2)
-    order_price = round(float(price), 2)
+    order_price = round(float(price) + float(max_slippage), 2)
 
     order_args = OrderArgs(
         price=order_price,
@@ -268,7 +268,7 @@ async def execute_polymarket_sell(ticker, side, size, price, max_slippage):
 
     calculated_price = base_price - max_slippage
 
-    formatted_price = f"{calculated_price:.4f}"
+    formatted_price = round(calculated_price, 2)
 
     order_args = OrderArgs(
         price=formatted_price,

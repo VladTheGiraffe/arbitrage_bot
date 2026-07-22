@@ -203,7 +203,7 @@ async def run_kalshi(kalshi_watchlist, kalshi_market_state):
             await asyncio.sleep(5)  
 
 
-async def execute_kalshi_buy(ticker, yes_no, count, price, client_order_id):
+async def execute_kalshi_buy(ticker, yes_no, count, price, client_order_id, max_slippage):
     api_key = os.getenv("KALSHI_API_KEY")
     url = "https://external-api.kalshi.com/trade-api/v2/portfolio/events/orders"
     path = "/trade-api/v2/portfolio/events/orders"
@@ -217,13 +217,15 @@ async def execute_kalshi_buy(ticker, yes_no, count, price, client_order_id):
         "Content-Type": "application/json"
     }
 
+    ceiling_price = float(price) + float(max_slippage)
+
     if yes_no.lower() == "no":
-        inverted_price = 1.00 - float(price)
+        inverted_price = 1.00 - ceiling_price
         formatted_price = f"{inverted_price:.4f}"
         formatted_side = "ask"
 
     else:
-        formatted_price = f"{float(price):.4f}"
+        formatted_price = f"{ceiling_price:.4f}"
         formatted_side = "bid" if yes_no.lower() == "yes" else "ask"
 
     formatted_count = str(int(float(count)))

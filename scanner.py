@@ -5,7 +5,7 @@ import math
 import os
 import uuid
 from datetime import datetime
-from poly_client import execute_polymarket_buy, get_poly_balance, execute_polymarket_sell, check_poly_inventory
+from poly_client import execute_polymarket_buy, get_poly_balance, execute_polymarket_sell, check_poly_inventory, cancel_poly_order
 from kalshi_client import execute_kalshi_buy, get_kalshi_balance, execute_kalshi_sell, check_kalshi_order
 
 POLY_MIN_SHARES = 5.0
@@ -94,14 +94,19 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     kalshi_order_id = str(uuid.uuid4())
 
                     try:
-                        results = await asyncio.gather(
-                            execute_kalshi_buy(kalshi_ticker, "yes", trade_size, kalshi_yes_cost, kalshi_order_id, entry_slippage_cap),
-                            execute_polymarket_buy(poly_no_token, "no", trade_size, poly_no_cost, entry_slippage_cap),
-                            return_exceptions=True
+                        results = await asyncio.wait_for(
+                            asyncio.gather(
+                                execute_kalshi_buy(kalshi_ticker, "yes", trade_size, kalshi_yes_cost, kalshi_order_id, entry_slippage_cap),
+                                execute_polymarket_buy(poly_no_token, "no", trade_size, poly_no_cost, entry_slippage_cap),
+                                return_exceptions=True
+                            ),
+                            timeout=5.0
                         )
                         
                         kalshi_result = results[0]
                         poly_result = results[1]
+
+                        await asyncio.sleep(1.5)
 
                         if isinstance(kalshi_result, Exception) or kalshi_result.get("status") == 409:
                             print("Network drop detected on Kalshi leg. Interrogating API...")
@@ -122,43 +127,36 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                                 print("State Reconciled: Poly trade executed in the dark. Cancelling unwind.")
                                 poly_result = {"success": True}
 
-                        kalshi_filled = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result
-                        poly_filled = not isinstance(poly_result, Exception) and poly_result.get("success") is True
+                        poly_order_id = poly_result.get("orderID", "")
 
-                        if kalshi_filled == poly_filled:
-                            print("Execution Symmetrical. No unwind required.")
+                        kalshi_success = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result
 
-                        elif kalshi_filled and not poly_filled:
-                            print("!!! ASYMMETRIC FILL: Unwinding Kalshi Leg !!!")
-                            await execute_kalshi_sell(kalshi_ticker, "yes", trade_size, kalshi_yes_cost, 0.02, str(uuid.uuid4()))
+                        actual_poly_shares = await check_poly_inventory(poly_no_token)
 
-                        elif poly_filled and not kalshi_filled:
-                            print("!!! ASYMETTRIC FILL: Unwinding Poly Leg !!!")
+                        if kalshi_success and actual_poly_shares == trade_size:
+                            print("Execution Symmetrical. Perfect 1:1 Hedge.")
 
-                            max_retries = 5
-                            retry_count = 0
-                            tokens_arrived = False
+                        elif kalshi_success and actual_poly_shares < trade_size:
+                            naked_kalshi_shares = trade_size - actual_poly_shares
+                            print(f"[!] ASYMMETRIC FILL: Unwinding {naked_kalshi_shares} Kalshi shares.")
 
-                            while retry_count < max_retries and not tokens_arrived:
-                                print(f"Checking wallet for tokens... (Attempt {retry_count + 1}/{max_retries})")
+                            await cancel_poly_order(poly_order_id)
 
-                                poly_actually_filled = await check_poly_inventory(poly_no_token, trade_size)
+                            await asyncio.sleep(1.0)
 
-                                if poly_actually_filled:
-                                    tokens_arrived = True
-                                    print("Tokens settled on-chain. Firing execution leg..")
-                                
-                                    await execute_polymarket_sell(poly_no_token, "no", trade_size, poly_no_cost, poly_no_cost - 0.01)
+                            await execute_kalshi_sell(kalshi_ticker, "yes", naked_kalshi_shares, kalshi_yes_cost, 0.02, str(uuid.uuid4()))
 
-                                else:
-                                    retry_count += 1
-                                    await asyncio.sleep(2)
+                        elif not kalshi_success and actual_poly_shares > 0:
+                            print(f"[!] ASYMMETRIC FILL: Kalshi dropped. Unwinding {actual_poly_shares} Poly shares")
 
-                            if not tokens_arrived:
-                                print("CRITICAL: Blockchain failed to settle tokens. Manual Unwind Required.")
+                            await execute_polymarket_sell(poly_no_token, "no", actual_poly_shares, poly_no_cost, 0.02)
 
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")
                         await asyncio.sleep(30)
+
+                    except asyncio.TimeoutError:
+                        print("[!] CRITICAL: Network Timeout. 5.0s limit exceeded.")
+                        continue
 
                     except Exception as e:
                         print(f"Error during trade execution: {e}")
@@ -187,15 +185,20 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                     try:
                         print("Firing execution leg...")
-                        results = await asyncio.gather(
-                            execute_kalshi_buy(kalshi_ticker, "no", trade_size, kalshi_no_cost, kalshi_order_id, entry_slippage_cap),
-                            execute_polymarket_buy(poly_yes_token, "yes", trade_size, poly_yes_cost, entry_slippage_cap),
-                            return_exceptions=True
+                        results = await asyncio.wait_for(
+                            asyncio.gather(
+                                execute_kalshi_buy(kalshi_ticker, "no", trade_size, kalshi_no_cost, kalshi_order_id, entry_slippage_cap),
+                                execute_polymarket_buy(poly_yes_token, "yes", trade_size, poly_yes_cost, entry_slippage_cap),
+                                return_exceptions=True
+                            ),
+                            timeout=5.0
                         )
                         
 
                         kalshi_result = results[0]
                         poly_result = results[1]
+
+                        await asyncio.sleep(1.5)
 
                         if isinstance(kalshi_result, Exception):
                             print("Network drop detected on Kalshi leg. Interrogating API...")
@@ -215,44 +218,35 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                                 print("State Reconciled: Poly trade executed in the dark. Cancelling unwind.")
                                 poly_result = {"success": True}
 
-                        kalshi_filled = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result
-                        poly_filled = not isinstance(poly_result, Exception) and poly_result.get("success") is True
+                        poly_order_id = poly_result.get("orderID", "")
 
-                        if kalshi_filled == poly_filled:
-                            print("Execution Symmetrical. No unwind required.")
+                        kalshi_success = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result
 
-                        elif kalshi_filled and not poly_filled:
-                            print("!!! ASYMMETRIC FILL: Unwinding Kalshi Leg !!!")
-                            await execute_kalshi_sell(kalshi_ticker, "no", trade_size, kalshi_no_cost, 0.02, str(uuid.uuid4()))
+                        actual_poly_shares = await check_poly_inventory(poly_yes_token)
 
-                        elif poly_filled and not kalshi_filled:
-                            print("!!! ASYMETTRIC FILL: Unwinding Poly Leg !!!")
-                            
-                            max_retries = 5
-                            retry_count = 0
-                            tokens_arrived = False
+                        if kalshi_success and actual_poly_shares == trade_size:
+                            print("Execution Symmetrical. Perfect 1:1 Hedge.")
 
-                            while retry_count < max_retries and not tokens_arrived:
-                                print(f"Checking wallet for tokens... (Attempt {retry_count + 1}/{max_retries})")
+                        elif kalshi_success and actual_poly_shares < trade_size:
+                            naked_kalshi_shares = trade_size - actual_poly_shares
+                            print(f"[!] ASYMMETRIC FILL: Unwinding {naked_kalshi_shares} Kalshi shares.")
 
-                                poly_actually_filled = await check_poly_inventory(poly_yes_token, trade_size)
+                            await cancel_poly_order(poly_order_id)
 
-                                if poly_actually_filled:
-                                    tokens_arrived = True
-                                    print("Tokens settled on-chain. Firing execution leg..")
-                                
-                                    await execute_polymarket_sell(poly_yes_token, "yes", trade_size, poly_yes_cost, poly_yes_cost - 0.01)
+                            await asyncio.sleep(1.0)
 
-                                else:
-                                    retry_count += 1
-                                    await asyncio.sleep(2)
+                            await execute_kalshi_sell(kalshi_ticker, "no", naked_kalshi_shares, kalshi_no_cost, 0.02, str(uuid.uuid4()))
 
-                            if not tokens_arrived:
-                                print("CRITICAL: Blockchain failed to settle tokens. Manual Unwind Required.")
-                            
+                        elif not kalshi_success and actual_poly_shares > 0:
+                            print(f"[!] ASYMMETRIC FILL: Kalshi dropped. Unwinding {actual_poly_shares} Poly shares")
 
+                            await execute_polymarket_sell(poly_yes_token, "yes", actual_poly_shares, poly_yes_cost, 0.02)
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")
                         await asyncio.sleep(30)
+
+                    except asyncio.TimeoutError:
+                        print("[!] CRITICAL: Network Timeout. 5.0s limit exceeded.")
+                        continue
 
                     except Exception as e:
                         print(f"Error during trade execution: {e}")

@@ -14,15 +14,9 @@ async def manual_liquidation():
     print(f"\n[!] Armed: Dumping {shares_to_dump} shares of {direction.upper()}... ")
     print("[!] Executing direct API strike bypassing UI...")
 
-    dynamic_slippage = estimated_cost - 0.01
+    slippage = 0.01
 
-    await execute_polymarket_sell(
-        token_id=target_token,
-        direction=direction,
-        size=shares_to_dump,
-        cost=estimated_cost,
-        max_slippage=dynamic_slippage
-    )
+    await execute_polymarket_sell(target_token, direction, shares_to_dump, estimated_cost, slippage)
 
     print("\n[+] Payload Fired.")
 

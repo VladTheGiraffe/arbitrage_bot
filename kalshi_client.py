@@ -7,6 +7,7 @@ import json
 import base64
 import requests
 import uuid
+import httpx
 from datetime import datetime, timedelta
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -112,6 +113,18 @@ async def get_kalshi_balance():
             usd_balance = float(raw_cents) / 100.0
 
             return usd_balance
+
+
+async def get_kalshi_strike(kalshi_ticker):
+    url = f"https://api.elections.kalshi.com/trade-api/v2/markets/{kalshi_ticker}"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url)
+        data = response.json()
+
+        baseline = float(data["market"]['floor_strike'])
+
+        return baseline
 
 
 async def run_kalshi(kalshi_watchlist, kalshi_market_state):
@@ -283,7 +296,7 @@ async def execute_kalshi_sell(ticker, yes_no, count, price, max_slippage, client
         "side": formatted_side,
         "count": formatted_count,
         "price": formatted_price,
-        "client_order_id": client_order_id,
+        "client_order_id": str(uuid.uuid4()),
         "time_in_force": "fill_or_kill",
         "self_trade_prevention_type": "taker_at_cross"
     }

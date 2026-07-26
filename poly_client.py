@@ -10,6 +10,7 @@ import json
 import re
 import requests
 import logging
+import httpx
 from py_clob_client_v2 import ClobClient, ApiCreds, SignatureTypeV2, OrderArgs, PartialCreateOrderOptions, OrderType, Side, BalanceAllowanceParams, AssetType
 from eth_account import Account
 from eth_account.messages import encode_typed_data
@@ -114,6 +115,25 @@ def fetch_polymarket_tickers():
     return market_map 
     pass
 
+
+#JIT ORACLE
+async def get_poly_strike(poly_slug):
+    url = f"https://gamma-api.polymarket.com/events/{poly_slug}"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url)
+        data = response.json()
+
+        description = data['description']
+
+        match = re.search(r'\$(\d{1,3}(?:,\d{3})*\.\d{2})', description)
+
+        if match:
+            baseline = float(match.group(1).replace(",", ""))
+            return baseline
+
+        else:
+            raise ValueError("Polymarket baseline price not found.")
 
 async def snapshot_polymarket_tickers(matched_keys, poly_map, poly_market_state):
     async with aiohttp.ClientSession() as session:
@@ -239,7 +259,7 @@ async def run_polymarket(poly_watchlist, poly_market_state):
 
 
 async def execute_polymarket_buy(ticker, side, size, price, max_slippage):
-    order_size = round(float(size), 2)
+    order_size = int(float(size))
     order_price = round(float(price) + float(max_slippage), 2)
 
     order_args = OrderArgs(
@@ -250,7 +270,7 @@ async def execute_polymarket_buy(ticker, side, size, price, max_slippage):
     )
 
     try:
-        resp = client.create_and_post_order(order_args, order_type=OrderType.FOK)
+        resp = client.create_and_post_order(order_args, order_type=OrderType.GTC)
         if resp.get("success") == False:
             print(f"Polymarket order rejected: {resp.get('errorMsg')}")
             
@@ -263,7 +283,7 @@ async def execute_polymarket_buy(ticker, side, size, price, max_slippage):
 
 
 async def execute_polymarket_sell(ticker, side, size, price, max_slippage):
-    order_size = round(float(size), 2)
+    order_size = int(float(size))
     base_price = float(price)
 
     calculated_price = base_price - max_slippage
@@ -278,7 +298,7 @@ async def execute_polymarket_sell(ticker, side, size, price, max_slippage):
     )
 
     try:
-        resp = client.create_and_post_order(order_args, order_type=OrderType.FOK)
+        resp = client.create_and_post_order(order_args, order_type=OrderType.GTC)
         if resp.get("success") == False:
             print(f"Polymarket order rejected: {resp.get('errorMsg')}")
             
@@ -300,7 +320,7 @@ async def get_poly_balance():
     return float(response.get("balance", 0.0)) / 1e6
 
 
-async def check_poly_inventory(token_id, expected_trade_size):
+async def check_poly_inventory(token_id):
     try:
         params = BalanceAllowanceParams(
             asset_type=AssetType.CONDITIONAL,
@@ -311,14 +331,23 @@ async def check_poly_inventory(token_id, expected_trade_size):
 
         current_balance = float(response.get("balance", 0.0)) / 1e6
 
-        if current_balance >= float(expected_trade_size):
-            return True
-        return False
+        return int(current_balance)
 
     except Exception as e:
         print(f"Inventory interrogation failed: {e}")
-        return False
+        return 0
 
+
+async def cancel_poly_order(order_id):
+    try:
+        print(f"Canceling resting Polymarket order: {order_id}")
+
+        response = client.cancel_orders([order_id])
+
+        return response
+    except Exception as e:
+        print(f"CRITICAL: Failed to cancel resting Poly order: {e}")
+        return None
 
 if __name__ == "__main__":
     import asyncio

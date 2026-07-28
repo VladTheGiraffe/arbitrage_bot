@@ -35,6 +35,17 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
             kalshi_ticker = kalshi_map[bridge_key]["ticker"]
             poly_tokens = poly_map[bridge_key]["tokens"]
 
+            k_strike = kalshi_map[bridge_key].get("baseline")
+            p_strike = poly_map[bridge_key].get("baseline")
+
+            if k_strike and p_strike:
+                oracle_delta = abs(k_strike - p_strike)
+                MAX_ORACLE_SPREAD = 1.50
+
+                if oracle_delta > MAX_ORACLE_SPREAD:
+                    print(f"GATE BLOCKED: Oracle spread too wide (${oracle_delta:.2f})")
+                    continue
+
             poly_yes_token = poly_tokens[0]
             poly_no_token = poly_tokens[1]
 
@@ -129,7 +140,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                         poly_order_id = poly_result.get("orderID", "")
 
-                        kalshi_success = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result
+                        kalshi_success = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result and kalshi_result.get("status") != 409
 
                         actual_poly_shares = await check_poly_inventory(poly_no_token)
 
@@ -147,9 +158,10 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                             await execute_kalshi_sell(kalshi_ticker, "yes", naked_kalshi_shares, kalshi_yes_cost, 0.02, str(uuid.uuid4()))
 
                         elif not kalshi_success and actual_poly_shares > 0:
+                            shares_to_unwind = min(actual_poly_shares, trade_size)
                             print(f"[!] ASYMMETRIC FILL: Kalshi dropped. Unwinding {actual_poly_shares} Poly shares")
 
-                            await execute_polymarket_sell(poly_no_token, "no", actual_poly_shares, poly_no_cost, 0.02)
+                            await execute_polymarket_sell(poly_no_token, "no", shares_to_unwind, poly_no_cost, 0.02)
 
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")
                         await asyncio.sleep(30)
@@ -200,7 +212,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                         await asyncio.sleep(1.5)
 
-                        if isinstance(kalshi_result, Exception):
+                        if isinstance(kalshi_result, Exception) or kalshi_result.get("status") == 409:
                             print("Network drop detected on Kalshi leg. Interrogating API...")
 
                             kalshi_actually_filled = await check_kalshi_order(kalshi_order_id)
@@ -220,7 +232,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                         poly_order_id = poly_result.get("orderID", "")
 
-                        kalshi_success = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result
+                        kalshi_success = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result and kalshi_result.get("status") != 409
 
                         actual_poly_shares = await check_poly_inventory(poly_yes_token)
 
@@ -238,9 +250,10 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                             await execute_kalshi_sell(kalshi_ticker, "no", naked_kalshi_shares, kalshi_no_cost, 0.02, str(uuid.uuid4()))
 
                         elif not kalshi_success and actual_poly_shares > 0:
+                            shares_to_unwind = min(actual_poly_shares, trade_size)
                             print(f"[!] ASYMMETRIC FILL: Kalshi dropped. Unwinding {actual_poly_shares} Poly shares")
 
-                            await execute_polymarket_sell(poly_yes_token, "yes", actual_poly_shares, poly_yes_cost, 0.02)
+                            await execute_polymarket_sell(poly_yes_token, "yes", shares_to_unwind, poly_yes_cost, 0.02)
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")
                         await asyncio.sleep(30)
 

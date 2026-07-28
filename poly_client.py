@@ -79,6 +79,7 @@ def fetch_polymarket_tickers():
             
             
             for event in payload:
+                event_slug = event.get("slug", "")
                 for market in event.get("markets", []):
                     if market.get("closed") == True or market.get("active") == False:
                         continue
@@ -104,7 +105,8 @@ def fetch_polymarket_tickers():
                                 bucket_id = f"{ticker}|{normalized_date}|{start_time}-{end_time}"
                                 market_map[bucket_id] = {
                                     "question": question,
-                                    "tokens": clob_token_ids
+                                    "tokens": clob_token_ids,
+                                    "slug": event_slug
                                 }
 
                         # else:
@@ -118,13 +120,22 @@ def fetch_polymarket_tickers():
 
 #JIT ORACLE
 async def get_poly_strike(poly_slug):
+    if not poly_slug:
+            print("[!] ORACLE BLOCKED: Slug is missing.")
+            return None
+
     url = f"https://gamma-api.polymarket.com/events/{poly_slug}"
 
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
+
+        if response.status_code != 200:
+            print(f"[!] ORACLE BLOCKED: Polymarket returned {response.status_code}")
+            return None
+
         data = response.json()
 
-        description = data['description']
+        description = data["description"]
 
         match = re.search(r'\$(\d{1,3}(?:,\d{3})*\.\d{2})', description)
 
@@ -133,7 +144,8 @@ async def get_poly_strike(poly_slug):
             return baseline
 
         else:
-            raise ValueError("Polymarket baseline price not found.")
+            print("[!] ORACLE BLOCKED: Baseline price not found in regex.")
+            return None
 
 async def snapshot_polymarket_tickers(matched_keys, poly_map, poly_market_state):
     async with aiohttp.ClientSession() as session:

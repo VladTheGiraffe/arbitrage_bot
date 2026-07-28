@@ -1,6 +1,6 @@
 import asyncio
 
-from poly_client import execute_polymarket_sell
+from poly_client import execute_polymarket_sell, initialize_poly_client
 
 async def manual_liquidation():
     print("Initiating manual backend liquidation... ")
@@ -15,6 +15,8 @@ async def manual_liquidation():
     print("[!] Executing direct API strike bypassing UI...")
 
     slippage = 0.01
+
+    initialize_poly_client()
 
     await execute_polymarket_sell(target_token, direction, shares_to_dump, estimated_cost, slippage)
 

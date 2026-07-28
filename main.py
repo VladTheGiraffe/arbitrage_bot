@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 
 
 #Modular Imports
-from kalshi_client import fetch_kalshi_tickers, run_kalshi, get_kalshi_balance
-from poly_client import initialize_poly_client, fetch_polymarket_tickers, snapshot_polymarket_tickers, run_polymarket, get_poly_balance
+from kalshi_client import fetch_kalshi_tickers, run_kalshi, get_kalshi_balance, get_kalshi_strike
+from poly_client import initialize_poly_client, fetch_polymarket_tickers, snapshot_polymarket_tickers, run_polymarket, get_poly_balance, get_poly_strike
 from scanner import arbitrage_scanner
 
 #Load Environment
@@ -61,6 +61,13 @@ async def orchestrator():
         for bridge_key in matched_keys:
             native_ticker = kalshi_map[bridge_key]["ticker"]
             kalshi_watchlist.append(native_ticker)
+
+            poly_slug = poly_map[bridge_key].get("slug")
+
+            kalshi_map[bridge_key]["baseline"] = await get_kalshi_strike(native_ticker)
+            poly_map[bridge_key]["baseline"] = await get_poly_strike(poly_slug)
+
+            print(f"[{bridge_key}] K_Strike: {kalshi_map[bridge_key]['baseline']} | P_Strike: {poly_map[bridge_key]['baseline']}")
 
             poly_tokens = poly_map[bridge_key]["tokens"]
 

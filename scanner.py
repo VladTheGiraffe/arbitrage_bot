@@ -28,10 +28,23 @@ async def has_sufficient_funds(trade_size, k_price, p_price):
 #Arbitrage Scanner
 async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_state, poly_market_state):
     print("Scanner active. Hunting for risk free margins...")
+    last_fired = {}
 
     while True:
         print(f"Tracking {len(matched_keys)} markets...", end="\r")
         for bridge_key in matched_keys:
+            close_time_str = kalshi_map[bridge_key].get("close_time")
+            close_time_utc = datetime.strptime(close_time_str, "%Y-%m-%dT%H:%M:%SZ")
+            seconds_left = (close_time_utc - datetime.utcnow()).total_seconds()
+
+            if seconds_left < 120:
+                print(f"GATE BLOCKED: {bridge_key} expires in {seconds_left:.0f}s. Skipping")
+                continue
+
+            now = datetime.utcnow().timestamp()
+            if now - last_fired.get(bridge_key, 0) < 30:
+                continue
+
             kalshi_ticker = kalshi_map[bridge_key]["ticker"]
             poly_tokens = poly_map[bridge_key]["tokens"]
 
@@ -138,7 +151,10 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                                 print("State Reconciled: Poly trade executed in the dark. Cancelling unwind.")
                                 poly_result = {"success": True}
 
-                        poly_order_id = poly_result.get("orderID", "")
+                        if isinstance(poly_result, Exception):
+                            poly_order_id = None
+                        else:
+                            poly_order_id = poly_result.get("orderID", "")
 
                         kalshi_success = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result and kalshi_result.get("status") != 409
 
@@ -164,14 +180,28 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                             await execute_polymarket_sell(poly_no_token, "no", shares_to_unwind, poly_no_cost, 0.02)
 
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")
-                        await asyncio.sleep(30)
+                        last_fired[bridge_key] = datetime.utcnow().timestamp()
 
                     except asyncio.TimeoutError:
                         print("[!] CRITICAL: Network Timeout. 5.0s limit exceeded.")
+
+                        kalshi_filled = await check_kalshi_order(kalshi_order_id)
+                        poly_shares = await check_poly_inventory(poly_no_token)
+
+                        if kalshi_filled and poly_shares == 0:
+                            print("[!] TIMEOUT UNWIND: Kalshi filled, Poly missed. Selling Kalshi.")
+                            await execute_kalshi_sell(kalshi_ticker, "yes", trade_size, kalshi_yes_cost, 0.02, str(uuid.uuid4()))
+
+                        elif not kalshi_filled and poly_shares > 0:
+                            print("[!] TIMEOUT UNWIND: Poly filled, Kalshi missed. Selling Poly.")
+                            await execute_polymarket_sell(poly_no_token, "no", poly_shares, poly_no_cost, 0.02)
+
                         continue
 
                     except Exception as e:
                         print(f"Error during trade execution: {e}")
+
+                    continue
 
                 if scenario_b_cost < 1.00:
                     print(f"!!! ARB FOUND !!! Profit: ${round(1.00 - scenario_b_cost, 2)} | K_NO + P_YES")
@@ -230,7 +260,10 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                                 print("State Reconciled: Poly trade executed in the dark. Cancelling unwind.")
                                 poly_result = {"success": True}
 
-                        poly_order_id = poly_result.get("orderID", "")
+                        if isinstance(poly_result, Exception):
+                            poly_order_id = None
+                        else:
+                            poly_order_id = poly_result.get("orderID", "")
 
                         kalshi_success = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result and kalshi_result.get("status") != 409
 
@@ -255,11 +288,21 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                             await execute_polymarket_sell(poly_yes_token, "yes", shares_to_unwind, poly_yes_cost, 0.02)
                         print("Execution complete. Freezing scanning for 30 seconds to prevent duplicate fires...")
-                        await asyncio.sleep(30)
+                        last_fired[bridge_key] = datetime.utcnow().timestamp()
 
                     except asyncio.TimeoutError:
                         print("[!] CRITICAL: Network Timeout. 5.0s limit exceeded.")
-                        continue
+                        kalshi_filled = await check_kalshi_order(kalshi_order_id)
+                        poly_shares = await check_poly_inventory(poly_yes_token)
+
+                        if kalshi_filled and poly_shares == 0:
+                            print("[!] TIMEOUT UNWIND: Kalshi filled, Poly missed. Selling Kalshi.")
+                            await execute_kalshi_sell(kalshi_ticker, "no", trade_size, kalshi_no_cost, 0.02, str(uuid.uuid4()))
+
+                        elif not kalshi_filled and poly_shares > 0:
+                            print("[!] TIMEOUT UNWIND: Poly filled, Kalshi missed. Selling Poly.")
+                            await execute_polymarket_sell(poly_yes_token, "yes", poly_shares, poly_yes_cost, 0.02)
+                        continue  
 
                     except Exception as e:
                         print(f"Error during trade execution: {e}")

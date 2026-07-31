@@ -115,7 +115,7 @@ def fetch_polymarket_tickers():
             # print(f"DEBUG: Polymarket map built with {len(market_map)} markets.")
     
     return market_map 
-    pass
+    
 
 
 #JIT ORACLE
@@ -135,7 +135,10 @@ async def get_poly_strike(poly_slug):
 
         data = response.json()
 
-        description = data["description"]
+        description = data.get("description", "")
+        if not description:
+            print("[!] ORACLE BLOCKED: No description field returned.")
+            return None
 
         match = re.search(r'\$(\d{1,3}(?:,\d{3})*\.\d{2})', description)
 
@@ -143,9 +146,15 @@ async def get_poly_strike(poly_slug):
             baseline = float(match.group(1).replace(",", ""))
             return baseline
 
-        else:
-            print("[!] ORACLE BLOCKED: Baseline price not found in regex.")
-            return None
+        match = re.search(r'(\d{1,3}(?:,\d{3})*\.\d{2})', description)
+        if match:
+            baseline = float(match.group(1).replace(",", ""))
+            print(f"[!] ORACLE WARN: Used fallback regex for {poly_slug}")
+            return baseline
+
+        
+        print("[!] ORACLE BLOCKED: Baseline price not found in regex.")
+        return None
 
 async def snapshot_polymarket_tickers(matched_keys, poly_map, poly_market_state):
     async with aiohttp.ClientSession() as session:
@@ -186,7 +195,7 @@ async def snapshot_polymarket_tickers(matched_keys, poly_map, poly_market_state)
 
                     except Exception as e:
                         print(f"Snapshot failed for {token}: {e}")
-    pass
+    
 
 #Run Polymarket
 async def run_polymarket(poly_watchlist, poly_market_state):
@@ -332,7 +341,7 @@ async def get_poly_balance():
     return float(response.get("balance", 0.0)) / 1e6
 
 
-async def check_poly_inventory(token_id):
+async def check_poly_inventory(token_id, trade_size=None):
     try:
         params = BalanceAllowanceParams(
             asset_type=AssetType.CONDITIONAL,
@@ -340,17 +349,22 @@ async def check_poly_inventory(token_id):
         )
 
         response = client.get_balance_allowance(params)
-
         current_balance = float(response.get("balance", 0.0)) / 1e6
+
+        if trade_size is not None:
+            return int(current_balance) >= trade_size
 
         return int(current_balance)
 
     except Exception as e:
         print(f"Inventory interrogation failed: {e}")
-        return 0
+        return False
 
 
 async def cancel_poly_order(order_id):
+    if not order_id:
+        print("[!] Cancel skipped: No order ID.")
+        return None
     try:
         print(f"Canceling resting Polymarket order: {order_id}")
 

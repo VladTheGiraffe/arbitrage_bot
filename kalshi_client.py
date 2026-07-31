@@ -8,10 +8,13 @@ import base64
 import requests
 import uuid
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+with open("kalshi_api.key", "rb") as key_file:
+    _PRIVATE_KEY = load_pem_private_key(key_file.read(), password=None)
 
 #Target List
 TARGET_SERIES = ['KXBTC15M', 'KXETH15M', 'KXSOL15M']
@@ -69,24 +72,21 @@ def fetch_kalshi_tickers():
     # print(f"DEBUG: Kalshi map built with {len(market_map)} normalized markets.")
     
     return market_map
-    pass
+    
 
 def generate_kalshi_signature(method, path):
     current_time = time.time()
     timestamp = str(int(current_time * 1000))
     message_string = f"{timestamp}{method}{path}"
+    message_bytes = message_string.encode('utf-8')
     # print(f"DEBUG: Hashing String --> {message_string}")
     
-    with open("kalshi_api.key", "rb") as key_file:
-        private_key_bytes = key_file.read()
-        private_key = load_pem_private_key(private_key_bytes, password=None)
-        message_bytes = message_string.encode('utf-8')
-        raw_signature = private_key.sign(
-            message_bytes,
-            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-            hashes.SHA256()
-        )
-        base64_signature = base64.b64encode(raw_signature).decode('utf-8')
+    raw_signature = _PRIVATE_KEY.sign(
+        message_bytes,
+        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+        hashes.SHA256()
+    )
+    base64_signature = base64.b64encode(raw_signature).decode('utf-8')
 
     return timestamp, base64_signature
 

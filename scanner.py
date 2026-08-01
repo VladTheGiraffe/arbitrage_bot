@@ -29,6 +29,7 @@ async def has_sufficient_funds(trade_size, k_price, p_price):
 async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_state, poly_market_state):
     print("Scanner active. Hunting for risk free margins...")
     last_fired = {}
+    last_funds_blocked = {}
 
     close_times = {}
     for key in matched_keys:
@@ -63,13 +64,15 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
             k_strike = kalshi_map[bridge_key].get("baseline")
             p_strike = poly_map[bridge_key].get("baseline")
 
-            if k_strike and p_strike:
-                oracle_delta = abs(k_strike - p_strike)
-                MAX_ORACLE_SPREAD = 1.50
+            if not k_strike or not p_strike:
+                print(f"GATE BLLOCKED: Oracle data missing. K: {k_strike} | P: {p_strike}")
+                continue
 
-                if oracle_delta > MAX_ORACLE_SPREAD:
-                    print(f"GATE BLOCKED: Oracle spread too wide (${oracle_delta:.2f})")
-                    continue
+            oracle_delta =abs(k_strike - p_strike)
+            MAX_ORACLE_SPREAD = 0.50
+            if oracle_delta > MAX_ORACLE_SPREAD:
+                print(f"GATE BLOCKED: Oracle spread too wide (${oracle_delta:.2f})")
+                continue
 
             poly_yes_token = poly_tokens[0]
             poly_no_token = poly_tokens[1]
@@ -122,9 +125,13 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     trade_size = max(POLY_MIN_SHARES, size_by_notional)
                     trade_size = int(trade_size)
                     
+                    if datetime.utcnow().timestamp() - last_funds_blocked.get(bridge_key, 0) < 10:
+                        continue
+
                     is_funded = await has_sufficient_funds(trade_size, kalshi_yes_cost, poly_no_cost)
 
                     if not is_funded:
+                        last_funds_blocked[bridge_key] = datetime.utcnow().timestamp()
                         continue
 
                     kalshi_order_id = str(uuid.uuid4())
@@ -187,7 +194,10 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                             await asyncio.sleep(1.0)
 
-                            await execute_kalshi_sell(kalshi_ticker, "yes", naked_kalshi_shares, kalshi_yes_cost, 0.02, str(uuid.uuid4()))
+                            unwind_result = await execute_kalshi_sell(kalshi_ticker, "yes", naked_kalshi_shares, kalshi_yes_cost, 0.02, str(uuid.uuid4()))
+                            if not unwind_result or unwind_result.get("status") == 409 or "errorMsg" in unwind_result:
+                                print(f"[!!!] CRITICAL: Kalshi YES unwind FAILED on {kalshi_ticker}. {naked_kalshi_shares} naked shares. MANUAL INTERVENTION REQUIRED.")
+
 
                         elif not kalshi_success and actual_poly_shares > 0:
                             shares_to_unwind = min(actual_poly_shares, trade_size)
@@ -232,10 +242,14 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     size_by_notional = math.ceil(notional_target / float(price_per_share))
                     trade_size = max(POLY_MIN_SHARES, size_by_notional)
                     trade_size = int(trade_size)
+
+                    if datetime.utcnow().timestamp() - last_funds_blocked.get(bridge_key, 0) < 10:
+                        continue
                     
                     is_funded = await has_sufficient_funds(trade_size, kalshi_no_cost, poly_yes_cost)
 
                     if not is_funded:
+                        last_funds_blocked[bridge_key] = datetime.utcnow().timestamp()
                         continue
                     
 
@@ -300,7 +314,10 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
 
                             await asyncio.sleep(1.0)
 
-                            await execute_kalshi_sell(kalshi_ticker, "no", naked_kalshi_shares, kalshi_no_cost, 0.02, str(uuid.uuid4()))
+                            unwind_result = await execute_kalshi_sell(kalshi_ticker, "no", naked_kalshi_shares, kalshi_no_cost, 0.02, str(uuid.uuid4()))
+                            if not unwind_result or unwind_result.get("status") == 409 or "errorMsg" in unwind_result:
+                                print(f"[!!!] CRITICAL: Kalshi NO unwind FAILED on {kalshi_ticker}. {naked_kalshi_shares} naked shares. MANUAL INTERVENTION NEEDED.")
+
 
                         elif not kalshi_success and actual_poly_shares > 0:
                             shares_to_unwind = min(actual_poly_shares, trade_size)

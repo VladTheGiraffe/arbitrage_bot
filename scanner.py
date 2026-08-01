@@ -30,15 +30,27 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
     print("Scanner active. Hunting for risk free margins...")
     last_fired = {}
 
+    close_times = {}
+    for key in matched_keys:
+        close_time_str = kalshi_map[key].get("close_time")
+        if close_time_str:
+            close_times[key] = datetime.strptime(close_time_str, "%Y-%m-%dT%H:%M:%SZ")
+
     while True:
         print(f"Tracking {len(matched_keys)} markets...", end="\r")
-        for bridge_key in matched_keys:
-            close_time_str = kalshi_map[bridge_key].get("close_time")
-            close_time_utc = datetime.strptime(close_time_str, "%Y-%m-%dT%H:%M:%SZ")
+
+        for bridge_key in list(matched_keys):
+            close_time_utc = close_times.get(bridge_key)
+
+            if not close_time_utc:
+                matched_keys.discard(bridge_key)
+                continue
+
             seconds_left = (close_time_utc - datetime.utcnow()).total_seconds()
 
             if seconds_left < 120:
-                print(f"GATE BLOCKED: {bridge_key} expires in {seconds_left:.0f}s. Skipping")
+                print(f"GATE BLOCKED: {bridge_key} expired. Removing from watchlist.")
+                matched_keys.discard(bridge_key)
                 continue
 
             now = datetime.utcnow().timestamp()
@@ -156,7 +168,11 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                         else:
                             poly_order_id = poly_result.get("orderID", "")
 
-                        kalshi_success = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result and kalshi_result.get("status") != 409
+                        kalshi_success = (
+                            not isinstance(kalshi_result, Exception) 
+                            and "errorMsg" not in kalshi_result 
+                            and kalshi_result.get("status") != 409
+                        )
 
                         actual_poly_shares = await check_poly_inventory(poly_no_token)
 
@@ -265,7 +281,11 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                         else:
                             poly_order_id = poly_result.get("orderID", "")
 
-                        kalshi_success = not isinstance(kalshi_result, Exception) and "error" not in kalshi_result and kalshi_result.get("status") != 409
+                        kalshi_success = (
+                            not isinstance(kalshi_result, Exception) 
+                            and "errorMsg" not in kalshi_result 
+                            and kalshi_result.get("status") != 409
+                        )
 
                         actual_poly_shares = await check_poly_inventory(poly_yes_token)
 

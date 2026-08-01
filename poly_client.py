@@ -157,44 +157,31 @@ async def get_poly_strike(poly_slug):
         return None
 
 async def snapshot_polymarket_tickers(matched_keys, poly_map, poly_market_state):
+    print(f"Snapshot Engine started. Mapping {len(poly_map)} markets...")
+
+    async def fetch_token(session, token):
+        url = f"https://clob.polymarket.com/book?token_id={token}"
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    bid_price = float(data.get("bids", [{}])[0].get("price", 0.0)) if data.get("bids") else 0.0
+                    ask_price = float(data.get("asks", [{}])[0].get("price", 0.0)) if data.get("asks") else 0.0
+                    poly_market_state[token] = {"bid": bid_price, "ask": ask_price}
+        except Exception as e:
+            print(f"Snapshot failed for {token}: {e}")
+
     async with aiohttp.ClientSession() as session:
-        print(f"Snapshot Engine started. Mapping {len(poly_map)} markets...")
+        tasks = []
+
         for bridge_key in matched_keys:
             tokens = poly_map[bridge_key]["tokens"]
             
             if len(tokens) >= 2:
-                poly_yes_token = tokens[0]
-                poly_no_token = tokens[1]
+                tasks.append(fetch_token(session, tokens[0]))
+                tasks.append(fetch_token(session, tokens[1]))
 
-                for token in [poly_yes_token, poly_no_token]:
-                    url = f"https://clob.polymarket.com/book?token_id={token}"
-
-                    try:
-                        # print(f"Pulling CLOB data for token: {token[-6:]}...")
-                        async with session.get(url) as response:
-                            if response.status == 200:
-                                data = await response.json()
-                                # print("Data received and parsed.")
-
-                                bid_price = 0.0
-                                ask_price = 0.0
-
-                                bids = data.get("bids", [])
-                                if len(bids) > 0:
-                                    bid_price = float(bids[0].get("price"))
-
-                                asks = data.get("asks", [])
-                                if len(asks) > 0:
-                                    ask_price = float(asks[0].get("price"))
-
-                                if token not in poly_market_state:
-                                    poly_market_state[token] = {"bid": 0.0, "ask": 0.0}
-
-                                poly_market_state[token]["bid"] = bid_price
-                                poly_market_state[token]["ask"] = ask_price
-
-                    except Exception as e:
-                        print(f"Snapshot failed for {token}: {e}")
+        await asyncio.gather(*tasks)
     
 
 #Run Polymarket
@@ -217,6 +204,8 @@ async def run_polymarket(poly_watchlist, poly_market_state):
 
                     # debug_cap = 0
                     async for msg in ws:
+                        if msg.type != aiohttp.WSMsgType.TEXT:
+                            continue
                         data = json.loads(msg.data)
                         #print(f"Poly WS Ping: {str(data)[:60]}...")
                         # if debug_cap < 3:
@@ -244,8 +233,8 @@ async def run_polymarket(poly_watchlist, poly_market_state):
                                     if token_id not in poly_market_state:
                                         poly_market_state[token_id] = {"bid": 0.0, "ask": 0.0}
 
-                                poly_market_state[token_id]["bid"] = bid_price
-                                poly_market_state[token_id]["ask"] = ask_price
+                                    poly_market_state[token_id]["bid"] = bid_price
+                                    poly_market_state[token_id]["ask"] = ask_price
                                 # print(f"POLY UPDATE | Token: {token_id[-6:]} | New Ask: ${ask_price}")
 
                         elif isinstance(data, dict):
@@ -269,6 +258,10 @@ async def run_polymarket(poly_watchlist, poly_market_state):
                             else:
                                 pass                           
 
+        except asyncio.CancelledError:
+            print("[!] Polymarket WebSocket task cancelled. Closing cleanly.")
+            break
+
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             print(f"Polymarket network drop: {e}. Reconnecting...")
             await asyncio.sleep(retry_delay)
@@ -291,12 +284,13 @@ async def execute_polymarket_buy(ticker, side, size, price, max_slippage):
     )
 
     try:
-        resp = client.create_and_post_order(order_args, order_type=OrderType.GTC)
+        resp = await asyncio.to_thread(
+            client.create_and_post_order, order_args, order_type=OrderType.GTC
+        )
         if resp.get("success") == False:
             print(f"Polymarket order rejected: {resp.get('errorMsg')}")
             
         return resp
-
     except Exception as e:
         print(f"DEBUG: Order rejected. Error details: {e}")
         
@@ -319,7 +313,9 @@ async def execute_polymarket_sell(ticker, side, size, price, max_slippage):
     )
 
     try:
-        resp = client.create_and_post_order(order_args, order_type=OrderType.GTC)
+        resp = await asyncio.to_thread(
+            client.create_and_post_order, order_args, order_type=OrderType.GTC
+        )
         if resp.get("success") == False:
             print(f"Polymarket order rejected: {resp.get('errorMsg')}")
             
@@ -336,7 +332,7 @@ async def get_poly_balance():
         asset_type=AssetType.COLLATERAL
     )
 
-    response = client.get_balance_allowance(params)
+    response = await asyncio.to_thread(client.get_balance_allowance, params)
 
     return float(response.get("balance", 0.0)) / 1e6
 
@@ -348,7 +344,7 @@ async def check_poly_inventory(token_id, trade_size=None):
             token_id=token_id
         )
 
-        response = client.get_balance_allowance(params)
+        response = await asyncio.to_thread(client.get_balance_allowance, params)
         current_balance = float(response.get("balance", 0.0)) / 1e6
 
         if trade_size is not None:
@@ -368,7 +364,7 @@ async def cancel_poly_order(order_id):
     try:
         print(f"Canceling resting Polymarket order: {order_id}")
 
-        response = client.cancel_orders([order_id])
+        response = await asyncio.to_thread(client.cancel_orders, [order_id])
 
         return response
     except Exception as e:

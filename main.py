@@ -38,10 +38,10 @@ async def orchestrator():
         poly_market_state = {}
 
         print("Fetching Kalshi...")
-        kalshi_map = fetch_kalshi_tickers()
+        kalshi_map = await asyncio.to_thread(fetch_kalshi_tickers)
 
         print("Fetching Polymarket...")
-        poly_map = fetch_polymarket_tickers()
+        poly_map = await asyncio.to_thread(fetch_polymarket_tickers)
 
         print("\n--- ARBITRAGE BRIDGE ---")
         matched_keys = set(kalshi_map.keys()).intersection(set(poly_map.keys()))
@@ -81,7 +81,11 @@ async def orchestrator():
 
         await snapshot_polymarket_tickers(matched_keys, poly_map, poly_market_state)
         
-        time_remaining = get_seconds_to_next_interval(15)
+        earliest_close = min(
+            datetime.strptime(kalshi_map[k]["close_time"], "%Y-%m-%dT%H:%M:%SZ")
+            for k in matched_keys
+        )
+        time_remaining = max((earliest_close - datetime.utcnow()).total_seconds(), 1.0)
 
         try:
             print(f"Igniting Engine with {time_remaining:.1f}s wall clock fuse...")
@@ -113,17 +117,6 @@ async def run_arbitrage_engine(kalshi_watchlist, poly_watchlist, matched_keys, k
         run_polymarket(poly_watchlist, poly_market_state),
         arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_state, poly_market_state)
     )
-
-def get_seconds_to_next_interval(interval_minutes=15):
-    now = datetime.now()
-
-    minutes_past = now.minute % interval_minutes
-    minutes_to_next = interval_minutes - minutes_past
-
-    next_interval = now.replace(second=0, microsecond=0) + timedelta(minutes=minutes_to_next)
-
-    seconds = (next_interval - now).total_seconds()
-    return max(seconds, 1.0)
 
 
 if __name__ == "__main__":

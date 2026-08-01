@@ -8,6 +8,7 @@ import base64
 import requests
 import uuid
 import httpx
+from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta, timezone
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -50,9 +51,10 @@ def fetch_kalshi_tickers():
                     if not ticker:
                         continue
 
-                    utc_end = datetime.strptime(expiry_raw, "%Y-%m-%dT%H:%M:%SZ")
-                    est_end = utc_end + timedelta(hours=-4)
-                    est_start = est_end + timedelta(minutes=-15)
+                    utc_end = datetime.strptime(expiry_raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                    eastern = ZoneInfo("America/New_York")
+                    est_end = utc_end.astimezone(eastern)
+                    est_start = est_end - timedelta(minutes=15)
 
                     start_str = est_start.strftime("%I:%M%p").lstrip('0')
                     end_str = est_end.strftime("%I:%M%p").lstrip('0')
@@ -116,7 +118,7 @@ async def get_kalshi_balance():
 
 
 async def get_kalshi_strike(kalshi_ticker):
-    url = f"https://api.elections.kalshi.com/trade-api/v2/markets/{kalshi_ticker}"
+    url = f"https://external-api.kalshi.com/trade-api/v2/markets/{kalshi_ticker}"
 
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
@@ -162,11 +164,10 @@ async def run_kalshi(kalshi_watchlist, kalshi_market_state):
 
                     # debug_cap = 0
                     async for msg in ws:
+                        if msg.type != aiohttp.WSMsgType.TEXT:
+                            continue
                         data = json.loads(msg.data)
-                        # if debug_cap < 3:
-                        #     print(f"\n--- RAW ECHANGE TICK ---")
-                        #     print(data)
-                        #     debug_cap += 1
+                        
                 
                         if data.get("type") == "ticker":
                             msg_content = data.get("msg", {})
@@ -203,7 +204,11 @@ async def run_kalshi(kalshi_watchlist, kalshi_market_state):
                                 kalshi_market_state[ticker]["NO"]["bid_qty"] = no_bid_qty
                                 kalshi_market_state[ticker]["NO"]["ask_qty"] = no_ask_qty
 
-                                        
+
+        except asyncio.CancelledError:
+            print("[!] Kalshi WebSocket task cancelled. Closing cleanly.")
+            break
+                                       
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             print(f"Network drop detected from exchange side: {e}")
             print(f"Circuits resetting. Reconnecting automatically in {retry_delay} seconds...")
@@ -262,7 +267,7 @@ async def execute_kalshi_buy(ticker, yes_no, count, price, client_order_id, max_
         
         except Exception as e:
             print(f"Failed to execute Kalshi order: {e}")
-            return None
+            return {"success": False, "errorMsg": str(e)}
 
 
 async def execute_kalshi_sell(ticker, yes_no, count, price, max_slippage, client_order_id):
@@ -296,7 +301,7 @@ async def execute_kalshi_sell(ticker, yes_no, count, price, max_slippage, client
         "side": formatted_side,
         "count": formatted_count,
         "price": formatted_price,
-        "client_order_id": str(uuid.uuid4()),
+        "client_order_id": client_order_id,
         "time_in_force": "fill_or_kill",
         "self_trade_prevention_type": "taker_at_cross"
     }
@@ -310,12 +315,12 @@ async def execute_kalshi_sell(ticker, yes_no, count, price, max_slippage, client
         
         except Exception as e:
             print(f"Failed to execute Kalshi order: {e}")
-            return None
+            return {"success": False, "errorMsg": str(e)}
 
 
 async def check_kalshi_order(client_order_id):
-    url = "https://external-api.kalshi.com/trade-api/v2"
-    endpoint_path = f"/portfolio/orders/{client_order_id}"
+    endpoint_path = f"/trade-api/v2/portfolio/orders/{client_order_id}"
+    url = f"https://external-api.kalshi.com{endpoint_path}"
 
     try:
         timestamp, signature = generate_kalshi_signature("GET", endpoint_path)
@@ -327,7 +332,7 @@ async def check_kalshi_order(client_order_id):
         }
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(url + endpoint_path, headers=headers) as resp:
+            async with session.get(url, headers=headers) as resp:
                 response = await resp.json()
 
         status = response.get("order", {}).get("status")

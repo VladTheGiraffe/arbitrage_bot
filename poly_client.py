@@ -103,10 +103,17 @@ def fetch_polymarket_tickers():
                                 ticker = ticker_map.get(asset, asset)
 
                                 bucket_id = f"{ticker}|{normalized_date}|{start_time}-{end_time}"
+                                strike_match = re.search(r'\$(\d{1,3}(?:,\d{3})*\.?\d*)', question)
+                                if strike_match:
+                                    baseline = float(strike_match.group(1).replace(",", ""))
+                                else:
+                                    baseline = None
+
                                 market_map[bucket_id] = {
                                     "question": question,
                                     "tokens": clob_token_ids,
-                                    "slug": event_slug
+                                    "slug": event_slug,
+                                    "baseline": baseline
                                 }
 
                         # else:

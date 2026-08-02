@@ -65,7 +65,7 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
             p_strike = poly_map[bridge_key].get("baseline")
 
             if not k_strike or not p_strike:
-                print(f"GATE BLLOCKED: Oracle data missing. K: {k_strike} | P: {p_strike}")
+                print(f"GATE BLOCKED: Oracle data missing. K: {k_strike} | P: {p_strike}")
                 continue
 
             oracle_delta =abs(k_strike - p_strike)

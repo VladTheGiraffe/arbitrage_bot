@@ -65,9 +65,9 @@ async def orchestrator():
             poly_slug = poly_map[bridge_key].get("slug")
 
             kalshi_map[bridge_key]["baseline"] = await get_kalshi_strike(native_ticker)
-            poly_map[bridge_key]["baseline"] = await get_poly_strike(poly_slug)
+            
 
-            print(f"[{bridge_key}] K_Strike: {kalshi_map[bridge_key]['baseline']} | P_Strike: {poly_map[bridge_key]['baseline']}")
+            print(f"[{bridge_key}] K_Strike: {kalshi_map[bridge_key]['baseline']} | P_Strike: {poly_map[bridge_key].get('baseline')}")
 
             poly_tokens = poly_map[bridge_key]["tokens"]
 

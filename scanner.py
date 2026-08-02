@@ -64,15 +64,16 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
             k_strike = kalshi_map[bridge_key].get("baseline")
             p_strike = poly_map[bridge_key].get("baseline")
 
-            if not k_strike or not p_strike:
-                print(f"GATE BLOCKED: Oracle data missing. K: {k_strike} | P: {p_strike}")
+            if not k_strike:
+                print(f"GATE BLOCKED: Kalshi missing for {bridge_key}.")
                 continue
 
-            oracle_delta =abs(k_strike - p_strike)
-            MAX_ORACLE_SPREAD = 0.50
-            if oracle_delta > MAX_ORACLE_SPREAD:
-                print(f"GATE BLOCKED: Oracle spread too wide (${oracle_delta:.2f})")
-                continue
+            if p_strike is not None:
+                oracle_delta =abs(k_strike - p_strike)
+                MAX_ORACLE_SPREAD = 0.50
+                if oracle_delta > MAX_ORACLE_SPREAD:
+                    print(f"GATE BLOCKED: Oracle spread too wide (${oracle_delta:.2f})")
+                    continue
 
             poly_yes_token = poly_tokens[0]
             poly_no_token = poly_tokens[1]
@@ -112,27 +113,28 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                 # print(f"Tracking {kalshi_ticker} | Cost A: ${scenario_a_cost:.2f} | Cost B: ${scenario_b_cost:.2f}")
 
                 if scenario_a_cost < 1.00:
-                    print(f"!!! ARB FOUND !!! Profit: ${round(1.00 - scenario_a_cost, 2)} | K_YES + P_NO")
-                    print("Executing simultaneous cross-chain trades...")
-                    
                     entry_slippage_cap = 0.01
-                    
+                                        
                     price_per_share = poly_no_cost
+                                        
                     
-
                     notional_target = 1.05
                     size_by_notional = math.ceil(notional_target / float(price_per_share))
                     trade_size = max(POLY_MIN_SHARES, size_by_notional)
                     trade_size = int(trade_size)
-                    
+
                     if datetime.utcnow().timestamp() - last_funds_blocked.get(bridge_key, 0) < 10:
                         continue
-
+                    
                     is_funded = await has_sufficient_funds(trade_size, kalshi_yes_cost, poly_no_cost)
-
+                    
                     if not is_funded:
                         last_funds_blocked[bridge_key] = datetime.utcnow().timestamp()
                         continue
+
+                    print(f"!!! ARB FOUND !!! Profit: ${round(1.00 - scenario_a_cost, 2)} | K_YES + P_NO")
+                    print("Executing simultaneous cross-chain trades...")
+                    
 
                     kalshi_order_id = str(uuid.uuid4())
 
@@ -230,11 +232,8 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     continue
 
                 if scenario_b_cost < 1.00:
-                    print(f"!!! ARB FOUND !!! Profit: ${round(1.00 - scenario_b_cost, 2)} | K_NO + P_YES")
-                    print("Executing simultaneous cross-chain trades...")
-                    
                     entry_slippage_cap = 0.01
-
+                    
                     price_per_share = poly_yes_cost
                     
 
@@ -251,6 +250,9 @@ async def arbitrage_scanner(matched_keys, kalshi_map, poly_map, kalshi_market_st
                     if not is_funded:
                         last_funds_blocked[bridge_key] = datetime.utcnow().timestamp()
                         continue
+
+                    print(f"!!! ARB FOUND !!! Profit: ${round(1.00 - scenario_b_cost, 2)} | K_NO + P_YES")
+                    print("Executing simultaneous cross-chain trades...")
                     
 
                     kalshi_order_id = str(uuid.uuid4())
